@@ -479,6 +479,134 @@ float end)
             }
             return new Tuple<bool, bool>(originalFitsContraints, oppositeFitsContraints);
         }
+        /// <summary>
+        /// Records the arm's current rotation into planeDetails from where the source axis
+        /// (-arm.right by default) actually points, measured in the root's frame
+        /// (root forward flattened, Vector3.up, and the matching right).
+        ///
+        /// Decomposition (yaw first, then pitch inside the yaw):
+        ///   horizontalRotation   = yaw around up, measured from the rest direction (-root.right).
+        ///                          Clockwise (towards the front) is positive.
+        ///   total pitch v        = pitch inside that yaw. Raising the arm is negative; going over
+        ///                          the top past straight up goes beyond -90.
+        ///   verticalRotation     = v * cos^2(yaw)  -> the part of the pitch in the Vector3.forward plane
+        ///   verticalRotationRight= v * sin^2(yaw)  -> the part of the pitch in the Vector3.right plane
+        ///   (so verticalRotation + verticalRotationRight == v)
+        ///
+        /// Every direction has two valid (yaw, pitch) readings: (h, v) and (h + 180, over-the-top v).
+        /// The one closest to the previously recorded values wins (inside the horizontal and vertical
+        /// limits), which is what keeps 180 from flipping to -180 and tells "behind the head" apart
+        /// from "out in front".
+        /// </summary>
+        public void SyncRecordedRotation(PlaneViewModel planeDetails, Transform arm, Axis sourceAxis = Axis.inverseRight)
+        {
+            if (planeDetails == null || arm == null)
+            {
+                return;
+            }
+            Vector3 direction = GetAxisVector(sourceAxis, arm);
+            if (direction.sqrMagnitude < 1e-6f)
+            {
+                return;
+            }
+            direction.Normalize();
+
+            Transform root = transformViewModel != null ? transformViewModel.GetRootTransform() : null;
+            Vector3 rootForward = root != null ? Vector3.ProjectOnPlane(root.forward, Vector3.up) : Vector3.forward;
+            if (rootForward.sqrMagnitude < 1e-6f)
+            {
+                rootForward = Vector3.forward;
+            }
+            rootForward.Normalize();
+            Vector3 rootUp = Vector3.up;
+            Vector3 rootRight = Vector3.Cross(rootUp, rootForward);
+
+            float x = Vector3.Dot(direction, rootRight);
+            float y = Vector3.Dot(direction, rootUp);
+            float z = Vector3.Dot(direction, rootForward);
+
+            float previousHorizontal = planeDetails.horizontalRotation;
+            float previousVertical = planeDetails.verticalRotation + planeDetails.verticalRotationRight;
+
+            float elevation = Mathf.Asin(Mathf.Clamp(y, -1f, 1f)) * Mathf.Rad2Deg;
+            float verticalInFront = -elevation;
+            float verticalOverTop = verticalInFront < 0f ? -180f - verticalInFront : 180f - verticalInFront;
+
+            float horizontal;
+            float vertical;
+            if (Mathf.Sqrt(x * x + z * z) < 0.001f)
+            {
+                // Pointing straight up or down: yaw is undefined, so keep the last one.
+                horizontal = previousHorizontal;
+                vertical = Mathf.Abs(verticalInFront - previousVertical) <= Mathf.Abs(verticalOverTop - previousVertical) ? verticalInFront : verticalOverTop;
+            }
+            else
+            {
+                // 0 at rest (-root.right), +90 straight in front, 180 at +root.right through the front.
+                float heading = Mathf.Atan2(z, -x) * Mathf.Rad2Deg;
+                float horizontalInFront = UnwrapAngleNear(heading, previousHorizontal);
+                float horizontalOverTop = UnwrapAngleNear(heading + 180f, previousHorizontal);
+                float costInFront = RotationReadingCost(planeDetails, horizontalInFront, verticalInFront, previousHorizontal, previousVertical);
+                float costOverTop = RotationReadingCost(planeDetails, horizontalOverTop, verticalOverTop, previousHorizontal, previousVertical);
+                if (costInFront <= costOverTop)
+                {
+                    horizontal = horizontalInFront;
+                    vertical = verticalInFront;
+                }
+                else
+                {
+                    horizontal = horizontalOverTop;
+                    vertical = verticalOverTop;
+                }
+            }
+
+            float forwardWeight = Mathf.Cos(horizontal * Mathf.Deg2Rad);
+            forwardWeight *= forwardWeight;
+
+            planeDetails.horizontalRotation = horizontal;
+            planeDetails.verticalRotation = vertical * forwardWeight;
+            planeDetails.verticalRotationRight = vertical * (1f - forwardWeight);
+            planeDetails.gonePastForwardTopLimit = planeDetails.verticalRotation < -90f;
+            planeDetails.gonePastRightTopLimit = planeDetails.verticalRotationRight < -90f;
+        }
+
+        static float UnwrapAngleNear(float angle, float reference)
+        {
+            return angle + 360f * Mathf.Round((reference - angle) / 360f);
+        }
+
+        // Lower is better: distance from the previous reading, plus a large penalty for
+        // readings outside the horizontal / vertical limits.
+        static float RotationReadingCost(PlaneViewModel planeDetails, float horizontal, float vertical, float previousHorizontal, float previousVertical)
+        {
+            float deltaHorizontal = horizontal - previousHorizontal;
+            float deltaVertical = vertical - previousVertical;
+            float cost = deltaHorizontal * deltaHorizontal + deltaVertical * deltaVertical;
+            float counterClockwiseSign = planeDetails.counterClockwiseSign != 0f ? Mathf.Sign(planeDetails.counterClockwiseSign) : -1f;
+            if (!WithinLimits(horizontal, counterClockwiseSign, planeDetails.maxHorizontalRotationCounterClockwise, planeDetails.maxHorizontalRotationClockwise))
+            {
+                cost += 1e6f;
+            }
+            if (!WithinLimits(vertical, counterClockwiseSign, planeDetails.maxVerticalRotationCounterClockwise, planeDetails.maxVerticalRotationClockwise))
+            {
+                cost += 1e6f;
+            }
+            return cost;
+        }
+
+        static bool WithinLimits(float angle, float counterClockwiseSign, float maxCounterClockwise, float maxClockwise)
+        {
+            if (maxCounterClockwise == 0f && maxClockwise == 0f)
+            {
+                return true; // limits not set
+            }
+            float counterClockwiseLimit = counterClockwiseSign * Mathf.Abs(maxCounterClockwise);
+            float clockwiseLimit = -counterClockwiseSign * Mathf.Abs(maxClockwise);
+            float low = Mathf.Min(counterClockwiseLimit, clockwiseLimit) - 1f;
+            float high = Mathf.Max(counterClockwiseLimit, clockwiseLimit) + 1f;
+            return angle >= low && angle <= high;
+        }
+
         public Tuple<PlaneViewModel, bool> RotateTransformWithConstraints(PlaneViewModel planeDetails, Vector3 armToRotateDirection, Vector3 originalArmToRotateDirection, Vector3 originalPivotAxisDirection, Transform armToRotate, Vector3 analogAxisOfRotationInput3DVector, Vector3 expectedTarget, Vector3 rotationAxis, float angleMagnitude = 30, bool fullRotation = false, Axis forwardAxis = Axis.inverseRight)
         {
             bool useForward = false;
@@ -590,7 +718,7 @@ float end)
                 //if (oppositeFitsContraints)
                 if (constraintsCheck.Item2)
                 {
-                    if (Mathf.Abs(angleForward) > Mathf.Abs(oppositeAngle) || !originalFitsContraints)
+                    if (Mathf.Abs(angleForward) > Mathf.Abs(oppositeAngle) || !constraintsCheck.Item1)
                     {
                         rotationAmount = oppositeAngle;
                     }
@@ -618,35 +746,10 @@ float end)
                         armToRotate.Rotate(rotationAxis, rotationAmount, Space.World);
                         //planeDetails.horizontalRotation += rotationAmount;
                     }
-                    Vector3 horizontalDirectionAfter = forwardAxis == Axis.inverseRight ? -armToRotate.right : Vector3.zero;
-                    Vector3 tDirection = new Vector3(0, 0, 0);
-                    float actualRotationAmount = Vector3.SignedAngle(armToRotateDirection, -armToRotate.right, rotationAxis);
-
-                    float oSign = 0f;
-                    
-                    if (useVerticalAxis)
-                    {
-                        projectedAfter = Vector3.ProjectOnPlane(horizontalDirectionAfter, armToRotate.forward);
-                        Vector3 aOR = verticalRotationAxis.magnitude > 0 ? verticalRotationAxis : projectedBefore.magnitude >= 0.99f && projectedAfter.magnitude >= 0.99f ? new Vector3(armToRotate.forward.x, 0f, armToRotate.forward.z).normalized : Vector3.right;
-                        if (aOR.magnitude > 0) {
-                            float verticalAmountRotated = DetermineSignedAngle(planeDetails, horizontalDirectionBefore, horizontalDirectionAfter, aOR);
-                            if (useForward)
-                            {
-                                planeDetails.verticalRotation += Mathf.Sign(vAngleRecorded) * Mathf.Abs(verticalAmountRotated);
-                            }
-                            else if (useRight) {
-                                planeDetails.verticalRotationRight += Mathf.Sign(vAngleRecorded) * Mathf.Abs(verticalAmountRotated);
-                            }
-                            
-                        }
-
-                    }
-                    else if (useHorizontalAxis)
-                    {
-                        amountRotated = DetermineSignedAngle(planeDetails, horizontalDirectionBefore, horizontalDirectionAfter, rotationAxis);
-                        planeDetails.horizontalRotation += amountRotated;
-                    }
                 }
+                // RECORD THE ROTATION: re-derive horizontal / vertical from where the arm now points,
+                // instead of adding a per-axis delta (the old per-axis deltas drifted, see SyncRecordedRotation).
+                SyncRecordedRotation(planeDetails, armToRotate, forwardAxis);
             }
             /*else {
                 float amountRotated = 0f;

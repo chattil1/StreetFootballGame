@@ -397,6 +397,9 @@ namespace FootballGame.TransformOperations.Models {
 
         public PlaneViewModel AlignAxisUsingGlobalAndLocalAxes(Axis sourceAxis, PlaneViewModel planeDetails, Transform armToRotate, Vector3 targetDirection, Vector3 expectedTarget, float rotationQuantity, bool fullRotation, Vector2 movementInput)
         {
+            // Start from where the arm really is this frame (the animator / LateUpdate restore can move it
+            // between frames), so the constraint checks below compare against accurate values.
+            SyncRecordedRotation(planeDetails, armToRotate, sourceAxis);
             Vector3 sourceAxisVector = GetAxisVector(sourceAxis, armToRotate);
             Vector3 originalAxisVector = sourceAxisVector;
             Vector3 originalPivotAxis = armToRotate.forward;
@@ -538,7 +541,7 @@ namespace FootballGame.TransformOperations.Models {
                 }
                 else
                 {
-                    rotationTuple = RotateTransformWithConstraints(planeDetails, sourceAxisVector, originalAxisVector, originalPivotAxis, armToRotate, targetDirection, expectedTarget, axesInOrder[4], magsInOrder[4] * fifthMag, fullRotation);
+                    rotationTuple = RotateTransformWithConstraints(planeDetails, sourceAxisVector, originalAxisVector, originalPivotAxis, armToRotate, targetDirection, expectedTarget, axesInOrder[4], rotationQuantity * magsInOrder[4], fullRotation);
                     //planeDetails = RotateTransformToDirection(planeDetails, sourceAxisVector, armToRotate, targetDirection, expectedTarget, localAxisFive, rotationQuantity * fifthMag, fullRotation);
                 }
                 //RotateTransformToDirection(sourceAxisVector, armToRotate, targetDirection, localAxisFive, rotationQuantity * fifthMag, fullRotation);
