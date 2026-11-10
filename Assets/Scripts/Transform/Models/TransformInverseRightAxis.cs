@@ -461,25 +461,29 @@ namespace FootballGame.TransformOperations.Models {
         void ChooseTargetYawPitch(PlaneViewModel planeDetails, Vector3 targetDirection, float horizontal, float vertical, Vector3 rootForward, Vector3 rootUp, Vector3 rootRight, out float targetHorizontal, out float targetVertical)
         {
             Vector3 target = targetDirection.normalized;
-            GetYawPitchReadings(target, rootForward, rootUp, rootRight, horizontal,
-                out float headingInFront, out float verticalInFront, out float headingOverTop, out float verticalOverTop);
+            float[] headings = new float[YawPitchCandidateCount];
+            float[] verticals = new float[YawPitchCandidateCount];
+            GetYawPitchCandidates(target, rootForward, rootUp, rootRight, horizontal, headings, verticals);
             GetHorizontalLimits(planeDetails, out float minHorizontal, out float maxHorizontal);
 
             float bestScore = float.MaxValue;
             targetHorizontal = horizontal;
             targetVertical = vertical;
-            for (int reading = 0; reading < 2; reading++)
+            for (int reading = 0; reading < YawPitchCandidateCount; reading++)
             {
-                float heading = reading == 0 ? headingInFront : headingOverTop;
-                float readingVertical = reading == 0 ? verticalInFront : verticalOverTop;
                 for (int turns = -1; turns <= 1; turns++)
                 {
-                    float candidateHorizontal = Mathf.Clamp(UnwrapAngleNear(heading, horizontal) + 360f * turns, minHorizontal, maxHorizontal);
+                    float candidateHorizontal = Mathf.Clamp(UnwrapAngleNear(headings[reading], horizontal) + 360f * turns, minHorizontal, maxHorizontal);
                     GetVerticalLimits(planeDetails, candidateHorizontal, out float minVertical, out float maxVertical);
-                    float candidateVertical = Mathf.Clamp(readingVertical, minVertical, maxVertical);
+                    float candidateVertical = Mathf.Clamp(verticals[reading], minVertical, maxVertical);
                     Vector3 candidateDirection = DirectionFromYawPitch(candidateHorizontal, candidateVertical, rootForward, rootUp, rootRight);
+                    // 1. point at the target (or as close as the limits allow)
+                    // 2. then the shortest move from where the arm is now
+                    // 3. a small extra cost for being past straight up/down, so a tie (e.g. rest -> (1,0,0))
+                    //    goes through the front instead of over the top
                     float score = Vector3.Angle(candidateDirection, target) * 1000f +
-                                  Mathf.Abs(candidateHorizontal - horizontal) + Mathf.Abs(candidateVertical - vertical);
+                                  Mathf.Abs(candidateHorizontal - horizontal) + Mathf.Abs(candidateVertical - vertical) +
+                                  0.5f * Mathf.Max(0f, Mathf.Abs(candidateVertical) - 90f);
                     if (score < bestScore)
                     {
                         bestScore = score;

@@ -49,8 +49,9 @@ public class WR : MonoBehaviour
     float maxHorizontalRotationClockwise = 225f;
     // Vertical limits for the left arm, in degrees from level (raising = counter-clockwise = negative).
     // "Forward" = Vector3.forward plane (arm out to the side), "Right" = Vector3.right plane (arm out in front);
-    // the limit at any yaw in between is a blend of the two. 135 up = 45 degrees past straight up.
-    float maxVerticalRotationCounterClockwise = 135f;   // up, out to the side
+    // the limit at any yaw in between is a blend of the two. 135 up = 45 degrees past straight up,
+    // 225 up = over the head and 45 degrees down the other side.
+    float maxVerticalRotationCounterClockwise = 225f;   // up, out to the side (continues over the top to the right side)
     float maxVerticalRotationClockwise = 90f;           // down, out to the side (straight down)
     float maxVerticalRotationCounterClockwiseRight = 135f; // up, out in front
     float maxVerticalRotationClockwiseRight = 135f;        // down, out in front (a little behind the leg)

@@ -514,21 +514,25 @@ float end)
             float previousHorizontal = planeDetails.horizontalRotation;
             float previousVertical = GetTotalVerticalRotation(planeDetails);
 
-            GetYawPitchReadings(direction, rootForward, rootUp, rootRight, previousHorizontal,
-                out float headingInFront, out float verticalInFront, out float headingOverTop, out float verticalOverTop);
+            float[] headings = new float[YawPitchCandidateCount];
+            float[] verticals = new float[YawPitchCandidateCount];
+            GetYawPitchCandidates(direction, rootForward, rootUp, rootRight, previousHorizontal, headings, verticals);
 
-            float horizontalInFront = UnwrapAngleNear(headingInFront, previousHorizontal);
-            float horizontalOverTop = UnwrapAngleNear(headingOverTop, previousHorizontal);
-            float costInFront = RotationReadingCost(planeDetails, horizontalInFront, verticalInFront, previousHorizontal, previousVertical);
-            float costOverTop = RotationReadingCost(planeDetails, horizontalOverTop, verticalOverTop, previousHorizontal, previousVertical);
-            if (costInFront <= costOverTop)
+            float bestCost = float.MaxValue;
+            float bestHorizontal = previousHorizontal;
+            float bestVertical = previousVertical;
+            for (int i = 0; i < YawPitchCandidateCount; i++)
             {
-                WriteRecordedRotation(planeDetails, horizontalInFront, verticalInFront);
+                float candidateHorizontal = UnwrapAngleNear(headings[i], previousHorizontal);
+                float cost = RotationReadingCost(planeDetails, candidateHorizontal, verticals[i], previousHorizontal, previousVertical);
+                if (cost < bestCost)
+                {
+                    bestCost = cost;
+                    bestHorizontal = candidateHorizontal;
+                    bestVertical = verticals[i];
+                }
             }
-            else
-            {
-                WriteRecordedRotation(planeDetails, horizontalOverTop, verticalOverTop);
-            }
+            WriteRecordedRotation(planeDetails, bestHorizontal, bestVertical);
         }
 
         /// <summary>Total pitch inside the yaw (raising the arm is negative).</summary>
@@ -615,6 +619,26 @@ float end)
                 headingInFront = Mathf.Atan2(z, -x) * Mathf.Rad2Deg;
                 headingOverTop = headingInFront + 180f;
             }
+        }
+
+        public const int YawPitchCandidateCount = 4;
+
+        /// <summary>
+        /// All (heading, pitch) readings of a direction that a limit range up to +/-270 could need:
+        ///   0: in front                      (pitch -90..90)
+        ///   1: over the top, heading + 180   (pitch -180..-90 or 90..180)
+        ///   2: over the top and past -180    (e.g. up at the side, over the head, and down the other side)
+        ///   3: under and past +180
+        /// Headings are not unwrapped.
+        /// </summary>
+        public static void GetYawPitchCandidates(Vector3 direction, Vector3 rootForward, Vector3 rootUp, Vector3 rootRight, float fallbackHeading, float[] headings, float[] verticals)
+        {
+            GetYawPitchReadings(direction, rootForward, rootUp, rootRight, fallbackHeading,
+                out float headingInFront, out float verticalInFront, out float headingOverTop, out float verticalOverTop);
+            headings[0] = headingInFront; verticals[0] = verticalInFront;
+            headings[1] = headingOverTop; verticals[1] = verticalOverTop;
+            headings[2] = headingOverTop; verticals[2] = verticalOverTop - 360f;
+            headings[3] = headingOverTop; verticals[3] = verticalOverTop + 360f;
         }
 
         public static float UnwrapAngleNear(float angle, float reference)
