@@ -1768,7 +1768,6 @@ public class WR : MonoBehaviour
     // Left arm catch targets for the 8 stick directions, in world space (x is always world x).
     // Order: N (0,1), NE (.71,.71), E (1,0), SE (.71,-.71), S (0,-1), SW (-.71,-.71), W (-1,0), NW (-.71,.71).
     // Stick angles in between blend smoothly between the two neighbours (see GetLeftArmCatchTarget).
-    // Entries marked "(filled in)" weren't specified yet; change them freely.
     const float TargetDiagonal = 0.57735f; // 1 / sqrt(3)
     const float TargetHalf = 0.70711f; // 1 / sqrt(2)
     static readonly Vector3[] leftArmTargetsFacingPlusZ =
@@ -1786,11 +1785,11 @@ public class WR : MonoBehaviour
     {
         new Vector3(0f, -1f, 0f),  // N  straight down
         new Vector3(TargetDiagonal, -TargetDiagonal, TargetDiagonal),     // NE
-        new Vector3(1f, 0f, 0f),   // E  (filled in)
-        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // SE (filled in: mirror of SW)
-        new Vector3(0f, 0f, -1f),  // S  straight behind (outside the arm's horizontal limits, see note)
+        new Vector3(1f, 0f, 0f),   // E
+        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // SE
+        new Vector3(0f, 0f, -1f),  // S  straight behind (past the arm's horizontal limit, so the WR turns)
         new Vector3(-TargetDiagonal, TargetDiagonal, -TargetDiagonal),    // SW
-        new Vector3(-1f, 0f, 0f),  // W  (filled in)
+        new Vector3(-1f, 0f, 0f),  // W
         new Vector3(-TargetDiagonal, -TargetDiagonal, TargetDiagonal),    // NW
     };
     static readonly Vector3[] leftArmTargetsFacingMinusZ =
@@ -1806,13 +1805,13 @@ public class WR : MonoBehaviour
     };
     static readonly Vector3[] leftArmTargetsFacingMinusZWithL2 =
     {
-        new Vector3(0f, TargetHalf, TargetHalf),     // N  (filled in: between NE and NW)
+        new Vector3(0f, TargetHalf, TargetHalf),     // N
         new Vector3(TargetDiagonal, TargetDiagonal, TargetDiagonal),      // NE
-        new Vector3(1f, 0f, 0f),   // E  (filled in)
+        new Vector3(1f, 0f, 0f),   // E
         new Vector3(TargetDiagonal, -TargetDiagonal, -TargetDiagonal),    // SE
         new Vector3(0f, -1f, 0f),  // S  straight down
         new Vector3(-TargetDiagonal, -TargetDiagonal, -TargetDiagonal),   // SW
-        new Vector3(-1f, 0f, 0f),  // W  (filled in)
+        new Vector3(-1f, 0f, 0f),  // W
         new Vector3(-TargetDiagonal, TargetDiagonal, TargetDiagonal),     // NW
     };
 
@@ -2117,7 +2116,7 @@ public class WR : MonoBehaviour
                         //tForLeftArm = -leftArm.Find("LeftArm").right + new Vector3(movementInput.x, 0f, movementInput.y).normalized;
                     }
                     // Stick -> left arm target (world space, see GetLeftArmCatchTarget). Overrides the two branches above.
-                    tForLeftArm = GetLeftArmCatchTarget(movementInput, leftArmCatchFacingSign, false /* TODO: L2 held while catching */);
+                    tForLeftArm = GetLeftArmCatchTarget(movementInput, leftArmCatchFacingSign, l2TriggerPressed && yButtonPressed);
                     List<KeyValuePair<Axis, float>> instructions = new List<KeyValuePair<Axis, float>>();
 
 
