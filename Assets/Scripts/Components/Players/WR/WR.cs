@@ -80,6 +80,10 @@ public class WR : MonoBehaviour
     private bool rTriggerPressed = false;
     private bool yButtonPressed = false;
     private bool isCatching = false;
+    // Which way the WR faced (world z sign) when the current catch attempt started; picks the stick mapping
+    // in GetLeftArmCatchTarget. Locked for the whole attempt so the root turn assist can't flip it.
+    private float leftArmCatchFacingSign = 1f;
+    private bool wasCatchingLastFrame = false;
     Quaternion previousLeftArmRotation;
     Quaternion previousRightArmRotation;
     Quaternion previousLeftShoulderRotation;
@@ -910,6 +914,11 @@ public class WR : MonoBehaviour
         Vector3 forceForBallDir = footballInstance.transform.position - footballSpot;
 
         isCatching = rTriggerPressed && yButtonPressed && movementInput.magnitude > 0f;
+        if (isCatching && !wasCatchingLastFrame)
+        {
+            leftArmCatchFacingSign = transform.forward.z >= 0f ? 1f : -1f;
+        }
+        wasCatchingLastFrame = isCatching;
         //Vector2 movementInput = playerInput.actions["Catch"].ReadValue<Vector2>();
         bool canRun = rTriggerPressed && wrAlignedForRun && !yButtonPressed && playerOnGround;
         bool canMoveAround = wrAlignedForRun && movementInput.magnitude > 0 && playerOnGround;
@@ -1743,20 +1752,43 @@ public class WR : MonoBehaviour
         planeViewModel.verticalRotation = verticalRotation;
     }
     /// <summary>
-    /// Left stick -> direction the left arm (-right) should point, in world space.
-    ///   y >= 0: towards Vector3.forward, rising on the diagonals:  (x, min(|x|,|y|), y)
-    ///           (0,1) -> forward, (1,0) -> right, (.71,.71) -> (.58,.58,.58)
-    ///   y <  0: towards straight up, leaning behind the head on the diagonals:  (x, |y|, -min(|x|,|y|))
-    ///           (0,-1) -> up, (.71,-.71) -> (.58,.58,-.58)
+    /// Left stick -> direction the left arm (-right) should point, in world space (x is always world x).
+    /// facingSign = which way the WR faced along world z when the catch started.
+    ///
+    /// Facing +Z (towards Vector3.forward):
+    ///   y >= 0: towards forward, rising on the diagonals:          (x, min(|x|,|y|), y)
+    ///           (0,1) -> (0,0,1)   (.71,.71) -> (.58,.58,.58)   (1,0) -> (1,0,0)
+    ///   y <  0: towards straight up, behind the head on diagonals: (x, |y|, -min(|x|,|y|))
+    ///           (0,-1) -> (0,1,0)  (.71,-.71) -> (.58,.58,-.58)
+    /// Facing -Z (stick up = up, stick down = forward relative to the WR = -Vector3.forward):
+    ///   y >= 0: towards straight up, leaning -Z on the diagonals:  (x, |y|, -min(|x|,|y|))
+    ///           (0,1) -> (0,1,0)   (.71,.71) -> (.58,.58,-.58)
+    ///   y <  0: towards -Vector3.forward, rising on the diagonals: (x, min(|x|,|y|), y)
+    ///           (0,-1) -> (0,0,-1) (.71,-.71) -> (.58,.58,-.58)
     /// World space (not relative to the WR) so turning the WR towards a target behind it brings the target in.
     /// </summary>
-    static Vector3 GetLeftArmCatchTarget(Vector2 stick)
+    static Vector3 GetLeftArmCatchTarget(Vector2 stick, float facingSign)
     {
         float smaller = Mathf.Min(Mathf.Abs(stick.x), Mathf.Abs(stick.y));
-        Vector3 target = stick.y >= 0f
-            ? new Vector3(stick.x, smaller, stick.y)
-            : new Vector3(stick.x, Mathf.Abs(stick.y), -smaller);
+        bool towardsUp = facingSign >= 0f ? stick.y < 0f : stick.y >= 0f;
+        Vector3 target = towardsUp
+            ? new Vector3(stick.x, Mathf.Abs(stick.y), -smaller)
+            : new Vector3(stick.x, smaller, stick.y);
         return target.sqrMagnitude > 1e-6f ? target.normalized : Vector3.zero;
+    }
+
+    /// <summary>
+    /// Direction to turn the WR to after a catch: the current stick direction (x, 0, y) projected onto the
+    /// Vector3.up plane; if the stick is centred, the current route segment's direction; otherwise Vector3.forward.
+    /// </summary>
+    Vector3 GetPostCatchRouteDirection(Vector2 stick)
+    {
+        Vector3 direction = Vector3.ProjectOnPlane(new Vector3(stick.x, 0f, stick.y), Vector3.up);
+        if (direction.sqrMagnitude < 0.01f && routeSegments != null && routeSegments.Count > 0)
+        {
+            direction = Vector3.ProjectOnPlane(routeSegments[0].direction, Vector3.up);
+        }
+        return direction.sqrMagnitude > 1e-6f ? direction.normalized : Vector3.forward;
     }
 
     void PopulateRotationConstraintsInfo(PlaneViewModel planeViewModel, float maxHorizontalRotationClockwise, float maxHorizontalRotationCounterClockwise, float maxVerticalRotationClockwise, float maxVerticalRotationCounterClockwise)
@@ -2020,7 +2052,7 @@ public class WR : MonoBehaviour
                         //tForLeftArm = -leftArm.Find("LeftArm").right + new Vector3(movementInput.x, 0f, movementInput.y).normalized;
                     }
                     // Stick -> left arm target (world space, see GetLeftArmCatchTarget). Overrides the two branches above.
-                    tForLeftArm = GetLeftArmCatchTarget(movementInput);
+                    tForLeftArm = GetLeftArmCatchTarget(movementInput, leftArmCatchFacingSign);
                     List<KeyValuePair<Axis, float>> instructions = new List<KeyValuePair<Axis, float>>();
 
 
@@ -2618,7 +2650,9 @@ public class WR : MonoBehaviour
             switch (wrState)
             {
                 case PlayerState.catchAndRun:
-                    rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, transform, leftHand, Vector2.zero, transform.forward, Vector3.forward, Vector3.up, Vector3.forward, 30f, "LeftArm", new PlaneViewModel() { });
+                    // After the ball hits the hand colliders, turn back to the route direction (flattened onto the ground).
+                    Vector3 postCatchRouteDirection = GetPostCatchRouteDirection(playerInput.actions["Catch"].ReadValue<Vector2>());
+                    rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, transform, leftHand, Vector2.zero, transform.forward, postCatchRouteDirection, Vector3.up, Vector3.forward, 30f, "LeftArm", new PlaneViewModel() { });
                     rootRotation = rootController.AlignTransformAxis();
                     if (rootRotation[0].Value)
                     {
