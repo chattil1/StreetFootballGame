@@ -1742,6 +1742,23 @@ public class WR : MonoBehaviour
         planeViewModel.horizontalRotation = horizontalRotation;
         planeViewModel.verticalRotation = verticalRotation;
     }
+    /// <summary>
+    /// Left stick -> direction the left arm (-right) should point, in world space.
+    ///   y >= 0: towards Vector3.forward, rising on the diagonals:  (x, min(|x|,|y|), y)
+    ///           (0,1) -> forward, (1,0) -> right, (.71,.71) -> (.58,.58,.58)
+    ///   y <  0: towards straight up, leaning behind the head on the diagonals:  (x, |y|, -min(|x|,|y|))
+    ///           (0,-1) -> up, (.71,-.71) -> (.58,.58,-.58)
+    /// World space (not relative to the WR) so turning the WR towards a target behind it brings the target in.
+    /// </summary>
+    static Vector3 GetLeftArmCatchTarget(Vector2 stick)
+    {
+        float smaller = Mathf.Min(Mathf.Abs(stick.x), Mathf.Abs(stick.y));
+        Vector3 target = stick.y >= 0f
+            ? new Vector3(stick.x, smaller, stick.y)
+            : new Vector3(stick.x, Mathf.Abs(stick.y), -smaller);
+        return target.sqrMagnitude > 1e-6f ? target.normalized : Vector3.zero;
+    }
+
     void PopulateRotationConstraintsInfo(PlaneViewModel planeViewModel, float maxHorizontalRotationClockwise, float maxHorizontalRotationCounterClockwise, float maxVerticalRotationClockwise, float maxVerticalRotationCounterClockwise)
     {
         planeViewModel.maxHorizontalRotationClockwise = maxHorizontalRotationClockwise;
@@ -2002,6 +2019,8 @@ public class WR : MonoBehaviour
                         tForLeftArm = (expectedPosition - leftHand.Find("LeftPalmCatchArea").position).normalized;
                         //tForLeftArm = -leftArm.Find("LeftArm").right + new Vector3(movementInput.x, 0f, movementInput.y).normalized;
                     }
+                    // Stick -> left arm target (world space, see GetLeftArmCatchTarget). Overrides the two branches above.
+                    tForLeftArm = GetLeftArmCatchTarget(movementInput);
                     List<KeyValuePair<Axis, float>> instructions = new List<KeyValuePair<Axis, float>>();
 
 

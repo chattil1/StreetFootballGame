@@ -401,6 +401,33 @@ namespace FootballGame.TransformOperations.Models {
         /// </summary>
         public static bool UseLegacyMultiAxisAiming = false;
 
+        /// <summary>When the arm can't reach the target inside its horizontal limits, turn the root (Vector3.up only).</summary>
+        public static bool AllowRootTurnAssist = true;
+
+        /// <summary>
+        /// If the target is no more than this many degrees further from the closest reachable point than from
+        /// a point that needs a much longer route (e.g. slightly past straight down at the side, which would
+        /// otherwise need a 180 degree sweep through the front), stop at the closest point instead.
+        /// </summary>
+        public static float StopShortTolerance = 15f;
+
+        /// <summary>
+        /// The root turns when the shortest route leaves the horizontal limits and the best route inside the
+        /// limits is longer by more than this (degrees of yaw + pitch travel), or can't reach the target.
+        /// </summary>
+        public static float RootTurnAssistMargin = 90f;
+
+        const float ReachedTolerance = 0.5f;
+        const int TargetCandidateCount = YawPitchCandidateCount * 3;
+
+        struct YawPitchCandidate
+        {
+            public float horizontal;
+            public float vertical;
+            public float error;   // degrees between where this (yaw, pitch) points and the target
+            public float travel;  // yaw + pitch distance from the arm now, plus a small over-the-top cost
+        }
+
         /// <summary>
         /// Moves the source axis (-arm.right) towards targetDirection by stepping
         /// horizontalRotation (yaw around up) and the total vertical rotation (pitch inside the yaw)
@@ -408,10 +435,11 @@ namespace FootballGame.TransformOperations.Models {
         ///   - yaw stays inside [-maxHorizontalCounterClockwise, maxHorizontalClockwise], so going from
         ///     left (0) to right (180) always goes clockwise through the front, never around the back.
         ///   - pitch stays inside the vertical limits for the current yaw (forward-plane limits at the
-        ///     side, right-plane limits in front), so it only goes a little over the top.
-        ///   - a level target only ever moves the pitch back towards level.
-        /// If the target can't be reached inside the limits, the arm goes to the closest point it can reach.
-        /// The rotation is still applied with transform.Rotate (Space.World).
+        ///     side, right-plane limits in front).
+        ///   - if the shortest route would leave the horizontal limits (and staying inside them means a much
+        ///     longer route or can't reach), the arm goes to the limit and the root turns around Vector3.up
+        ///     to bring the target in (AllowRootTurnAssist). targetDirection must be in world space for this.
+        /// The rotations are applied with transform.Rotate (Space.World).
         /// </summary>
         public PlaneViewModel AlignArmWithinConstraints(Axis sourceAxis, PlaneViewModel planeDetails, Transform armToRotate, Vector3 targetDirection, float horizontalStep, float verticalStep, bool fullRotation)
         {
@@ -420,16 +448,36 @@ namespace FootballGame.TransformOperations.Models {
             {
                 return planeDetails;
             }
+            Vector3 target = targetDirection.normalized;
             GetRootBasis(out Vector3 rootForward, out Vector3 rootUp, out Vector3 rootRight);
 
             float horizontal = planeDetails.horizontalRotation;
             float vertical = GetTotalVerticalRotation(planeDetails);
-
-            ChooseTargetYawPitch(planeDetails, targetDirection, horizontal, vertical, rootForward, rootUp, rootRight, out float targetHorizontal, out float targetVertical);
-
             float maxHorizontalStep = fullRotation ? float.MaxValue : Mathf.Abs(horizontalStep);
             float maxVerticalStep = fullRotation ? float.MaxValue : Mathf.Abs(verticalStep);
             GetHorizontalLimits(planeDetails, out float minHorizontal, out float maxHorizontal);
+
+            float targetHorizontal;
+            float targetVertical;
+            Transform root = transformViewModel != null ? transformViewModel.GetRootTransform() : null;
+            if (AllowRootTurnAssist && root != null && root != armToRotate &&
+                NeedsRootTurn(planeDetails, target, horizontal, vertical, rootForward, rootUp, rootRight, out float outsideHorizontal, out float outsideVertical))
+            {
+                // Turn the root by however far the shortest route is past the horizontal limit (one step per frame).
+                // The arm is a child of the root, so its recorded (yaw, pitch) relative to the root don't change.
+                float limit = Mathf.Clamp(outsideHorizontal, minHorizontal, maxHorizontal);
+                float rootTurn = Mathf.Clamp(outsideHorizontal - limit, -maxHorizontalStep, maxHorizontalStep);
+                root.Rotate(Vector3.up, rootTurn, Space.World);
+                GetRootBasis(out rootForward, out rootUp, out rootRight);
+                targetHorizontal = limit;
+                GetVerticalLimits(planeDetails, limit, out float minLimitVertical, out float maxLimitVertical);
+                targetVertical = Mathf.Clamp(outsideVertical, minLimitVertical, maxLimitVertical);
+            }
+            else
+            {
+                ChooseTargetYawPitch(planeDetails, target, horizontal, vertical, rootForward, rootUp, rootRight, out targetHorizontal, out targetVertical);
+            }
+
             float newHorizontal = Mathf.Clamp(horizontal + Mathf.Clamp(targetHorizontal - horizontal, -maxHorizontalStep, maxHorizontalStep), minHorizontal, maxHorizontal);
             GetVerticalLimits(planeDetails, newHorizontal, out float minVertical, out float maxVertical);
             float newVertical = Mathf.Clamp(vertical + Mathf.Clamp(targetVertical - vertical, -maxVerticalStep, maxVerticalStep), minVertical, maxVertical);
@@ -454,21 +502,18 @@ namespace FootballGame.TransformOperations.Models {
         }
 
         /// <summary>
-        /// Picks the (yaw, pitch) to aim for: of the target's "in front" and "over the top" readings
-        /// (and their +/-360 yaw versions), each clamped into the limits, the one that points closest to the
-        /// target wins; ties go to the one needing the least movement from where the arm is now.
+        /// Every way to point at the target (in front / over the top / past +-180, each with yaw +-360),
+        /// clamped into the limits.
         /// </summary>
-        void ChooseTargetYawPitch(PlaneViewModel planeDetails, Vector3 targetDirection, float horizontal, float vertical, Vector3 rootForward, Vector3 rootUp, Vector3 rootRight, out float targetHorizontal, out float targetVertical)
+        YawPitchCandidate[] GetClampedCandidates(PlaneViewModel planeDetails, Vector3 target, float horizontal, float vertical, Vector3 rootForward, Vector3 rootUp, Vector3 rootRight)
         {
-            Vector3 target = targetDirection.normalized;
             float[] headings = new float[YawPitchCandidateCount];
             float[] verticals = new float[YawPitchCandidateCount];
             GetYawPitchCandidates(target, rootForward, rootUp, rootRight, horizontal, headings, verticals);
             GetHorizontalLimits(planeDetails, out float minHorizontal, out float maxHorizontal);
 
-            float bestScore = float.MaxValue;
-            targetHorizontal = horizontal;
-            targetVertical = vertical;
+            YawPitchCandidate[] candidates = new YawPitchCandidate[TargetCandidateCount];
+            int index = 0;
             for (int reading = 0; reading < YawPitchCandidateCount; reading++)
             {
                 for (int turns = -1; turns <= 1; turns++)
@@ -477,21 +522,110 @@ namespace FootballGame.TransformOperations.Models {
                     GetVerticalLimits(planeDetails, candidateHorizontal, out float minVertical, out float maxVertical);
                     float candidateVertical = Mathf.Clamp(verticals[reading], minVertical, maxVertical);
                     Vector3 candidateDirection = DirectionFromYawPitch(candidateHorizontal, candidateVertical, rootForward, rootUp, rootRight);
-                    // 1. point at the target (or as close as the limits allow)
-                    // 2. then the shortest move from where the arm is now
-                    // 3. a small extra cost for being past straight up/down, so a tie (e.g. rest -> (1,0,0))
-                    //    goes through the front instead of over the top
-                    float score = Vector3.Angle(candidateDirection, target) * 1000f +
-                                  Mathf.Abs(candidateHorizontal - horizontal) + Mathf.Abs(candidateVertical - vertical) +
-                                  0.5f * Mathf.Max(0f, Mathf.Abs(candidateVertical) - 90f);
-                    if (score < bestScore)
+                    candidates[index++] = new YawPitchCandidate
                     {
-                        bestScore = score;
-                        targetHorizontal = candidateHorizontal;
-                        targetVertical = candidateVertical;
+                        horizontal = candidateHorizontal,
+                        vertical = candidateVertical,
+                        error = Vector3.Angle(candidateDirection, target),
+                        travel = Travel(horizontal, vertical, candidateHorizontal, candidateVertical),
+                    };
+                }
+            }
+            return candidates;
+        }
+
+        // Yaw + pitch distance, plus a small cost for being past straight up/down so a tie
+        // (e.g. rest -> (1,0,0)) goes through the front instead of over the top.
+        static float Travel(float fromHorizontal, float fromVertical, float toHorizontal, float toVertical)
+        {
+            return Mathf.Abs(toHorizontal - fromHorizontal) + Mathf.Abs(toVertical - fromVertical) +
+                   0.5f * Mathf.Max(0f, Mathf.Abs(toVertical) - 90f);
+        }
+
+        /// <summary>
+        /// Picks the (yaw, pitch) to aim for inside the limits:
+        ///   1. candidates that point at the target, or within StopShortTolerance of the closest any can get
+        ///   2. of those, the one with the shortest route from where the arm is now
+        /// </summary>
+        void ChooseTargetYawPitch(PlaneViewModel planeDetails, Vector3 target, float horizontal, float vertical, Vector3 rootForward, Vector3 rootUp, Vector3 rootRight, out float targetHorizontal, out float targetVertical)
+        {
+            YawPitchCandidate[] candidates = GetClampedCandidates(planeDetails, target, horizontal, vertical, rootForward, rootUp, rootRight);
+            float bestError = float.MaxValue;
+            foreach (YawPitchCandidate candidate in candidates)
+            {
+                bestError = Mathf.Min(bestError, candidate.error);
+            }
+            float bestScore = float.MaxValue;
+            targetHorizontal = horizontal;
+            targetVertical = vertical;
+            foreach (YawPitchCandidate candidate in candidates)
+            {
+                if (candidate.error > bestError + StopShortTolerance)
+                {
+                    continue;
+                }
+                float score = candidate.error * 4f + candidate.travel;
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    targetHorizontal = candidate.horizontal;
+                    targetVertical = candidate.vertical;
+                }
+            }
+        }
+
+        /// <summary>
+        /// True when the shortest route to the target goes outside the horizontal limits and staying inside
+        /// them either can't reach the target or is longer by more than RootTurnAssistMargin.
+        /// outsideHorizontal / outsideVertical are where that shortest route ends (yaw outside the limits).
+        /// </summary>
+        bool NeedsRootTurn(PlaneViewModel planeDetails, Vector3 target, float horizontal, float vertical, Vector3 rootForward, Vector3 rootUp, Vector3 rootRight, out float outsideHorizontal, out float outsideVertical)
+        {
+            outsideHorizontal = horizontal;
+            outsideVertical = vertical;
+            float[] headings = new float[YawPitchCandidateCount];
+            float[] verticals = new float[YawPitchCandidateCount];
+            GetYawPitchCandidates(target, rootForward, rootUp, rootRight, horizontal, headings, verticals);
+            GetHorizontalLimits(planeDetails, out float minHorizontal, out float maxHorizontal);
+
+            float bestOutsideTravel = float.MaxValue;
+            for (int reading = 0; reading < YawPitchCandidateCount; reading++)
+            {
+                for (int turns = -1; turns <= 1; turns++)
+                {
+                    float candidateHorizontal = UnwrapAngleNear(headings[reading], horizontal) + 360f * turns;
+                    if (candidateHorizontal >= minHorizontal && candidateHorizontal <= maxHorizontal)
+                    {
+                        continue; // inside the limits: no turn needed for this one
+                    }
+                    GetVerticalLimits(planeDetails, candidateHorizontal, out float minVertical, out float maxVertical);
+                    if (verticals[reading] < minVertical || verticals[reading] > maxVertical)
+                    {
+                        continue;
+                    }
+                    float travel = Travel(horizontal, vertical, candidateHorizontal, verticals[reading]);
+                    if (travel < bestOutsideTravel)
+                    {
+                        bestOutsideTravel = travel;
+                        outsideHorizontal = candidateHorizontal;
+                        outsideVertical = verticals[reading];
                     }
                 }
             }
+            if (bestOutsideTravel == float.MaxValue)
+            {
+                return false;
+            }
+
+            float bestInsideTravel = float.MaxValue;
+            foreach (YawPitchCandidate candidate in GetClampedCandidates(planeDetails, target, horizontal, vertical, rootForward, rootUp, rootRight))
+            {
+                if (candidate.error <= ReachedTolerance)
+                {
+                    bestInsideTravel = Mathf.Min(bestInsideTravel, candidate.travel);
+                }
+            }
+            return bestInsideTravel > bestOutsideTravel + RootTurnAssistMargin;
         }
 
         public PlaneViewModel AlignAxisUsingGlobalAndLocalAxes(Axis sourceAxis, PlaneViewModel planeDetails, Transform armToRotate, Vector3 targetDirection, Vector3 expectedTarget, float rotationQuantity, bool fullRotation, Vector2 movementInput)
