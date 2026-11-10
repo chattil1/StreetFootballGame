@@ -395,8 +395,107 @@ namespace FootballGame.TransformOperations.Models {
 
 
 
+        /// <summary>
+        /// true  = old behaviour: step around 5 axes (Vector3.up, arm.forward, arm.up, Vector3.forward, Vector3.right).
+        /// false = step yaw and pitch directly, clamped to the limits on every step (AlignArmWithinConstraints).
+        /// </summary>
+        public static bool UseLegacyMultiAxisAiming = false;
+
+        /// <summary>
+        /// Moves the source axis (-arm.right) towards targetDirection by stepping
+        /// horizontalRotation (yaw around up) and the total vertical rotation (pitch inside the yaw)
+        /// directly, so the arm can never leave the limits:
+        ///   - yaw stays inside [-maxHorizontalCounterClockwise, maxHorizontalClockwise], so going from
+        ///     left (0) to right (180) always goes clockwise through the front, never around the back.
+        ///   - pitch stays inside the vertical limits for the current yaw (forward-plane limits at the
+        ///     side, right-plane limits in front), so it only goes a little over the top.
+        ///   - a level target only ever moves the pitch back towards level.
+        /// If the target can't be reached inside the limits, the arm goes to the closest point it can reach.
+        /// The rotation is still applied with transform.Rotate (Space.World).
+        /// </summary>
+        public PlaneViewModel AlignArmWithinConstraints(Axis sourceAxis, PlaneViewModel planeDetails, Transform armToRotate, Vector3 targetDirection, float horizontalStep, float verticalStep, bool fullRotation)
+        {
+            SyncRecordedRotation(planeDetails, armToRotate, sourceAxis);
+            if (targetDirection.sqrMagnitude < 1e-6f)
+            {
+                return planeDetails;
+            }
+            GetRootBasis(out Vector3 rootForward, out Vector3 rootUp, out Vector3 rootRight);
+
+            float horizontal = planeDetails.horizontalRotation;
+            float vertical = GetTotalVerticalRotation(planeDetails);
+
+            ChooseTargetYawPitch(planeDetails, targetDirection, horizontal, vertical, rootForward, rootUp, rootRight, out float targetHorizontal, out float targetVertical);
+
+            float maxHorizontalStep = fullRotation ? float.MaxValue : Mathf.Abs(horizontalStep);
+            float maxVerticalStep = fullRotation ? float.MaxValue : Mathf.Abs(verticalStep);
+            GetHorizontalLimits(planeDetails, out float minHorizontal, out float maxHorizontal);
+            float newHorizontal = Mathf.Clamp(horizontal + Mathf.Clamp(targetHorizontal - horizontal, -maxHorizontalStep, maxHorizontalStep), minHorizontal, maxHorizontal);
+            GetVerticalLimits(planeDetails, newHorizontal, out float minVertical, out float maxVertical);
+            float newVertical = Mathf.Clamp(vertical + Mathf.Clamp(targetVertical - vertical, -maxVerticalStep, maxVerticalStep), minVertical, maxVertical);
+
+            // Rotate from the current (yaw, pitch) to the new one. Going through the yaw/pitch frame keeps the
+            // arm's twist the same relative to that frame.
+            Quaternion delta = YawPitchRotation(newHorizontal, newVertical, rootForward, rootUp) *
+                               Quaternion.Inverse(YawPitchRotation(horizontal, vertical, rootForward, rootUp));
+            delta.ToAngleAxis(out float angle, out Vector3 axis);
+            if (angle > 180f)
+            {
+                angle -= 360f;
+            }
+            if (Mathf.Abs(angle) > 0.0001f && !float.IsNaN(axis.x) && !float.IsInfinity(axis.x) && axis.sqrMagnitude > 0f)
+            {
+                armToRotate.Rotate(axis, angle, Space.World);
+            }
+
+            WriteRecordedRotation(planeDetails, newHorizontal, newVertical);
+            planeDetails.targetDirection = targetDirection;
+            return planeDetails;
+        }
+
+        /// <summary>
+        /// Picks the (yaw, pitch) to aim for: of the target's "in front" and "over the top" readings
+        /// (and their +/-360 yaw versions), each clamped into the limits, the one that points closest to the
+        /// target wins; ties go to the one needing the least movement from where the arm is now.
+        /// </summary>
+        void ChooseTargetYawPitch(PlaneViewModel planeDetails, Vector3 targetDirection, float horizontal, float vertical, Vector3 rootForward, Vector3 rootUp, Vector3 rootRight, out float targetHorizontal, out float targetVertical)
+        {
+            Vector3 target = targetDirection.normalized;
+            GetYawPitchReadings(target, rootForward, rootUp, rootRight, horizontal,
+                out float headingInFront, out float verticalInFront, out float headingOverTop, out float verticalOverTop);
+            GetHorizontalLimits(planeDetails, out float minHorizontal, out float maxHorizontal);
+
+            float bestScore = float.MaxValue;
+            targetHorizontal = horizontal;
+            targetVertical = vertical;
+            for (int reading = 0; reading < 2; reading++)
+            {
+                float heading = reading == 0 ? headingInFront : headingOverTop;
+                float readingVertical = reading == 0 ? verticalInFront : verticalOverTop;
+                for (int turns = -1; turns <= 1; turns++)
+                {
+                    float candidateHorizontal = Mathf.Clamp(UnwrapAngleNear(heading, horizontal) + 360f * turns, minHorizontal, maxHorizontal);
+                    GetVerticalLimits(planeDetails, candidateHorizontal, out float minVertical, out float maxVertical);
+                    float candidateVertical = Mathf.Clamp(readingVertical, minVertical, maxVertical);
+                    Vector3 candidateDirection = DirectionFromYawPitch(candidateHorizontal, candidateVertical, rootForward, rootUp, rootRight);
+                    float score = Vector3.Angle(candidateDirection, target) * 1000f +
+                                  Mathf.Abs(candidateHorizontal - horizontal) + Mathf.Abs(candidateVertical - vertical);
+                    if (score < bestScore)
+                    {
+                        bestScore = score;
+                        targetHorizontal = candidateHorizontal;
+                        targetVertical = candidateVertical;
+                    }
+                }
+            }
+        }
+
         public PlaneViewModel AlignAxisUsingGlobalAndLocalAxes(Axis sourceAxis, PlaneViewModel planeDetails, Transform armToRotate, Vector3 targetDirection, Vector3 expectedTarget, float rotationQuantity, bool fullRotation, Vector2 movementInput)
         {
+            if (!UseLegacyMultiAxisAiming)
+            {
+                return AlignArmWithinConstraints(sourceAxis, planeDetails, armToRotate, targetDirection, rotationQuantity, rotationQuantity, fullRotation);
+            }
             // Start from where the arm really is this frame (the animator / LateUpdate restore can move it
             // between frames), so the constraint checks below compare against accurate values.
             SyncRecordedRotation(planeDetails, armToRotate, sourceAxis);

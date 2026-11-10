@@ -509,60 +509,42 @@ float end)
             {
                 return;
             }
-            direction.Normalize();
-
-            Transform root = transformViewModel != null ? transformViewModel.GetRootTransform() : null;
-            Vector3 rootForward = root != null ? Vector3.ProjectOnPlane(root.forward, Vector3.up) : Vector3.forward;
-            if (rootForward.sqrMagnitude < 1e-6f)
-            {
-                rootForward = Vector3.forward;
-            }
-            rootForward.Normalize();
-            Vector3 rootUp = Vector3.up;
-            Vector3 rootRight = Vector3.Cross(rootUp, rootForward);
-
-            float x = Vector3.Dot(direction, rootRight);
-            float y = Vector3.Dot(direction, rootUp);
-            float z = Vector3.Dot(direction, rootForward);
+            GetRootBasis(out Vector3 rootForward, out Vector3 rootUp, out Vector3 rootRight);
 
             float previousHorizontal = planeDetails.horizontalRotation;
-            float previousVertical = planeDetails.verticalRotation + planeDetails.verticalRotationRight;
+            float previousVertical = GetTotalVerticalRotation(planeDetails);
 
-            float elevation = Mathf.Asin(Mathf.Clamp(y, -1f, 1f)) * Mathf.Rad2Deg;
-            float verticalInFront = -elevation;
-            float verticalOverTop = verticalInFront < 0f ? -180f - verticalInFront : 180f - verticalInFront;
+            GetYawPitchReadings(direction, rootForward, rootUp, rootRight, previousHorizontal,
+                out float headingInFront, out float verticalInFront, out float headingOverTop, out float verticalOverTop);
 
-            float horizontal;
-            float vertical;
-            if (Mathf.Sqrt(x * x + z * z) < 0.001f)
+            float horizontalInFront = UnwrapAngleNear(headingInFront, previousHorizontal);
+            float horizontalOverTop = UnwrapAngleNear(headingOverTop, previousHorizontal);
+            float costInFront = RotationReadingCost(planeDetails, horizontalInFront, verticalInFront, previousHorizontal, previousVertical);
+            float costOverTop = RotationReadingCost(planeDetails, horizontalOverTop, verticalOverTop, previousHorizontal, previousVertical);
+            if (costInFront <= costOverTop)
             {
-                // Pointing straight up or down: yaw is undefined, so keep the last one.
-                horizontal = previousHorizontal;
-                vertical = Mathf.Abs(verticalInFront - previousVertical) <= Mathf.Abs(verticalOverTop - previousVertical) ? verticalInFront : verticalOverTop;
+                WriteRecordedRotation(planeDetails, horizontalInFront, verticalInFront);
             }
             else
             {
-                // 0 at rest (-root.right), +90 straight in front, 180 at +root.right through the front.
-                float heading = Mathf.Atan2(z, -x) * Mathf.Rad2Deg;
-                float horizontalInFront = UnwrapAngleNear(heading, previousHorizontal);
-                float horizontalOverTop = UnwrapAngleNear(heading + 180f, previousHorizontal);
-                float costInFront = RotationReadingCost(planeDetails, horizontalInFront, verticalInFront, previousHorizontal, previousVertical);
-                float costOverTop = RotationReadingCost(planeDetails, horizontalOverTop, verticalOverTop, previousHorizontal, previousVertical);
-                if (costInFront <= costOverTop)
-                {
-                    horizontal = horizontalInFront;
-                    vertical = verticalInFront;
-                }
-                else
-                {
-                    horizontal = horizontalOverTop;
-                    vertical = verticalOverTop;
-                }
+                WriteRecordedRotation(planeDetails, horizontalOverTop, verticalOverTop);
             }
+        }
 
-            float forwardWeight = Mathf.Cos(horizontal * Mathf.Deg2Rad);
-            forwardWeight *= forwardWeight;
+        /// <summary>Total pitch inside the yaw (raising the arm is negative).</summary>
+        public static float GetTotalVerticalRotation(PlaneViewModel planeDetails)
+        {
+            return planeDetails.verticalRotation + planeDetails.verticalRotationRight;
+        }
 
+        /// <summary>
+        /// Stores a (yaw, pitch) reading. The pitch is split between the two planes:
+        /// verticalRotation gets cos^2(yaw) of it (Vector3.forward plane, arm out to the side),
+        /// verticalRotationRight gets sin^2(yaw) of it (Vector3.right plane, arm out in front).
+        /// </summary>
+        public static void WriteRecordedRotation(PlaneViewModel planeDetails, float horizontal, float vertical)
+        {
+            float forwardWeight = ForwardPlaneWeight(horizontal);
             planeDetails.horizontalRotation = horizontal;
             planeDetails.verticalRotation = vertical * forwardWeight;
             planeDetails.verticalRotationRight = vertical * (1f - forwardWeight);
@@ -570,9 +552,126 @@ float end)
             planeDetails.gonePastRightTopLimit = planeDetails.verticalRotationRight < -90f;
         }
 
-        static float UnwrapAngleNear(float angle, float reference)
+        static float ForwardPlaneWeight(float horizontal)
+        {
+            float c = Mathf.Cos(horizontal * Mathf.Deg2Rad);
+            return c * c;
+        }
+
+        /// <summary>Root frame: flattened root forward, world up, and the matching right.</summary>
+        protected void GetRootBasis(out Vector3 rootForward, out Vector3 rootUp, out Vector3 rootRight)
+        {
+            Transform root = transformViewModel != null ? transformViewModel.GetRootTransform() : null;
+            rootForward = root != null ? Vector3.ProjectOnPlane(root.forward, Vector3.up) : Vector3.forward;
+            if (rootForward.sqrMagnitude < 1e-6f)
+            {
+                rootForward = Vector3.forward;
+            }
+            rootForward.Normalize();
+            rootUp = Vector3.up;
+            rootRight = Vector3.Cross(rootUp, rootForward);
+        }
+
+        /// <summary>
+        /// Rotation that takes the rest direction (-rootRight) to (yaw, pitch):
+        /// pitch around rootForward first, then yaw around rootUp.
+        /// </summary>
+        public static Quaternion YawPitchRotation(float horizontal, float vertical, Vector3 rootForward, Vector3 rootUp)
+        {
+            return Quaternion.AngleAxis(horizontal, rootUp) * Quaternion.AngleAxis(vertical, rootForward);
+        }
+
+        public static Vector3 DirectionFromYawPitch(float horizontal, float vertical, Vector3 rootForward, Vector3 rootUp, Vector3 rootRight)
+        {
+            return YawPitchRotation(horizontal, vertical, rootForward, rootUp) * -rootRight;
+        }
+
+        /// <summary>
+        /// The two (heading, pitch) readings of a direction: "in front" and "over the top" (heading + 180).
+        /// Headings are not unwrapped. When the direction is straight up/down the heading is undefined,
+        /// so fallbackHeading is used.
+        /// </summary>
+        public static void GetYawPitchReadings(Vector3 direction, Vector3 rootForward, Vector3 rootUp, Vector3 rootRight, float fallbackHeading,
+            out float headingInFront, out float verticalInFront, out float headingOverTop, out float verticalOverTop)
+        {
+            direction.Normalize();
+            float x = Vector3.Dot(direction, rootRight);
+            float y = Vector3.Dot(direction, rootUp);
+            float z = Vector3.Dot(direction, rootForward);
+
+            float elevation = Mathf.Asin(Mathf.Clamp(y, -1f, 1f)) * Mathf.Rad2Deg;
+            verticalInFront = -elevation;
+            verticalOverTop = verticalInFront < 0f ? -180f - verticalInFront : 180f - verticalInFront;
+
+            if (Mathf.Sqrt(x * x + z * z) < 0.001f)
+            {
+                headingInFront = fallbackHeading;
+                headingOverTop = fallbackHeading;
+                verticalOverTop = verticalInFront;
+            }
+            else
+            {
+                // 0 at rest (-root.right), +90 straight in front, 180 at +root.right through the front.
+                headingInFront = Mathf.Atan2(z, -x) * Mathf.Rad2Deg;
+                headingOverTop = headingInFront + 180f;
+            }
+        }
+
+        public static float UnwrapAngleNear(float angle, float reference)
         {
             return angle + 360f * Mathf.Round((reference - angle) / 360f);
+        }
+
+        /// <summary>Allowed horizontalRotation range, e.g. [-45, 225].</summary>
+        public static void GetHorizontalLimits(PlaneViewModel planeDetails, out float min, out float max)
+        {
+            float counterClockwiseSign = CounterClockwiseSign(planeDetails);
+            float counterClockwiseLimit = counterClockwiseSign * Mathf.Abs(planeDetails.maxHorizontalRotationCounterClockwise);
+            float clockwiseLimit = -counterClockwiseSign * Mathf.Abs(planeDetails.maxHorizontalRotationClockwise);
+            min = Mathf.Min(counterClockwiseLimit, clockwiseLimit);
+            max = Mathf.Max(counterClockwiseLimit, clockwiseLimit);
+            if (min == 0f && max == 0f)
+            {
+                min = -180f;
+                max = 180f;
+            }
+        }
+
+        /// <summary>
+        /// Allowed total pitch at a given yaw. Out to the side the Vector3.forward-plane limits apply,
+        /// out in front the Vector3.right-plane limits apply, blended by cos^2 / sin^2 in between.
+        /// e.g. up to -135 (45 past straight up) and down to +90 at the side, +135 in front.
+        /// </summary>
+        public static void GetVerticalLimits(PlaneViewModel planeDetails, float horizontal, out float min, out float max)
+        {
+            float counterClockwiseSign = CounterClockwiseSign(planeDetails);
+            float forwardUp = Mathf.Abs(planeDetails.maxVerticalRotationCounterClockwise);
+            float forwardDown = Mathf.Abs(planeDetails.maxVerticalRotationClockwise);
+            float rightUp = planeDetails.maxVerticalRotationCounterClockwiseRight != 0f ? Mathf.Abs(planeDetails.maxVerticalRotationCounterClockwiseRight) : forwardUp;
+            float rightDown = planeDetails.maxVerticalRotationClockwiseRight != 0f ? Mathf.Abs(planeDetails.maxVerticalRotationClockwiseRight) : forwardDown;
+            if (forwardUp == 0f && forwardDown == 0f)
+            {
+                forwardUp = rightUp;
+                forwardDown = rightDown;
+            }
+            if (forwardUp == 0f && forwardDown == 0f)
+            {
+                min = -180f;
+                max = 180f;
+                return;
+            }
+            float forwardWeight = ForwardPlaneWeight(horizontal);
+            float up = forwardUp * forwardWeight + rightUp * (1f - forwardWeight);
+            float down = forwardDown * forwardWeight + rightDown * (1f - forwardWeight);
+            float counterClockwiseLimit = counterClockwiseSign * up;
+            float clockwiseLimit = -counterClockwiseSign * down;
+            min = Mathf.Min(counterClockwiseLimit, clockwiseLimit);
+            max = Mathf.Max(counterClockwiseLimit, clockwiseLimit);
+        }
+
+        static float CounterClockwiseSign(PlaneViewModel planeDetails)
+        {
+            return planeDetails.counterClockwiseSign != 0f ? Mathf.Sign(planeDetails.counterClockwiseSign) : -1f;
         }
 
         // Lower is better: distance from the previous reading, plus a large penalty for
@@ -582,29 +681,17 @@ float end)
             float deltaHorizontal = horizontal - previousHorizontal;
             float deltaVertical = vertical - previousVertical;
             float cost = deltaHorizontal * deltaHorizontal + deltaVertical * deltaVertical;
-            float counterClockwiseSign = planeDetails.counterClockwiseSign != 0f ? Mathf.Sign(planeDetails.counterClockwiseSign) : -1f;
-            if (!WithinLimits(horizontal, counterClockwiseSign, planeDetails.maxHorizontalRotationCounterClockwise, planeDetails.maxHorizontalRotationClockwise))
+            GetHorizontalLimits(planeDetails, out float minHorizontal, out float maxHorizontal);
+            if (horizontal < minHorizontal - 1f || horizontal > maxHorizontal + 1f)
             {
                 cost += 1e6f;
             }
-            if (!WithinLimits(vertical, counterClockwiseSign, planeDetails.maxVerticalRotationCounterClockwise, planeDetails.maxVerticalRotationClockwise))
+            GetVerticalLimits(planeDetails, horizontal, out float minVertical, out float maxVertical);
+            if (vertical < minVertical - 1f || vertical > maxVertical + 1f)
             {
                 cost += 1e6f;
             }
             return cost;
-        }
-
-        static bool WithinLimits(float angle, float counterClockwiseSign, float maxCounterClockwise, float maxClockwise)
-        {
-            if (maxCounterClockwise == 0f && maxClockwise == 0f)
-            {
-                return true; // limits not set
-            }
-            float counterClockwiseLimit = counterClockwiseSign * Mathf.Abs(maxCounterClockwise);
-            float clockwiseLimit = -counterClockwiseSign * Mathf.Abs(maxClockwise);
-            float low = Mathf.Min(counterClockwiseLimit, clockwiseLimit) - 1f;
-            float high = Mathf.Max(counterClockwiseLimit, clockwiseLimit) + 1f;
-            return angle >= low && angle <= high;
         }
 
         public Tuple<PlaneViewModel, bool> RotateTransformWithConstraints(PlaneViewModel planeDetails, Vector3 armToRotateDirection, Vector3 originalArmToRotateDirection, Vector3 originalPivotAxisDirection, Transform armToRotate, Vector3 analogAxisOfRotationInput3DVector, Vector3 expectedTarget, Vector3 rotationAxis, float angleMagnitude = 30, bool fullRotation = false, Axis forwardAxis = Axis.inverseRight)
