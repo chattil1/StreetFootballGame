@@ -77,8 +77,11 @@ public class WR : MonoBehaviour
     private float targetSpeed = 15f * (20f / 3f);
     private float maintainStrength = 10f;
     private bool wrAlignedForRun = false;
+
+    private bool l2TriggerPressed = false;
     private bool rTriggerPressed = false;
     private bool yButtonPressed = false;
+    
     private bool isCatching = false;
     // Which way the WR faced (world z sign) when the current catch attempt started; picks the stick mapping
     // in GetLeftArmCatchTarget. Locked for the whole attempt so the root turn assist can't flip it.
@@ -252,6 +255,8 @@ public class WR : MonoBehaviour
         playerInput.actions["Catch"].canceled += OnCatchCanceled;
         playerInput.actions["YButtonPressed"].performed += OnYButtonPressed;
         playerInput.actions["YButtonPressed"].canceled += OnYButtonCanceled;
+        playerInput.actions["L2TriggerPressed"].performed += OnL2TriggerPressed;
+        playerInput.actions["L2TriggerPressed"].canceled += OnL2TriggerCanceled;
         throwAction.ReadValue<Vector2>();
         previousRotationAmount = transform.localRotation.y;
 
@@ -1637,6 +1642,15 @@ public class WR : MonoBehaviour
     private void OnYButtonCanceled(InputAction.CallbackContext context)
     {
         yButtonPressed = false;
+    }
+
+    private void OnL2TriggerPressed(InputAction.CallbackContext context)
+    {
+        l2TriggerPressed = true;
+    }
+    private void OnL2TriggerCanceled(InputAction.CallbackContext context)
+    {
+       l2TriggerPressed = false;
     }
     private void OnTurn(InputAction.CallbackContext context)
     {
