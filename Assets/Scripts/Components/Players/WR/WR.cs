@@ -1751,30 +1751,81 @@ public class WR : MonoBehaviour
         planeViewModel.horizontalRotation = horizontalRotation;
         planeViewModel.verticalRotation = verticalRotation;
     }
+    // Left arm catch targets for the 8 stick directions, in world space (x is always world x).
+    // Order: N (0,1), NE (.71,.71), E (1,0), SE (.71,-.71), S (0,-1), SW (-.71,-.71), W (-1,0), NW (-.71,.71).
+    // Stick angles in between blend smoothly between the two neighbours (see GetLeftArmCatchTarget).
+    // Entries marked "(filled in)" weren't specified yet; change them freely.
+    const float TargetDiagonal = 0.57735f; // 1 / sqrt(3)
+    const float TargetHalf = 0.70711f; // 1 / sqrt(2)
+    static readonly Vector3[] leftArmTargetsFacingPlusZ =
+    {
+        new Vector3(0f, 0f, 1f),   // N  forward
+        new Vector3(TargetDiagonal, TargetDiagonal, TargetDiagonal),      // NE
+        new Vector3(1f, 0f, 0f),   // E
+        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // SE behind the head
+        new Vector3(0f, 1f, 0f),   // S  straight up
+        new Vector3(-TargetDiagonal, TargetDiagonal, TargetDiagonal),     // SW
+        new Vector3(-1f, 0f, 0f),  // W
+        new Vector3(-TargetDiagonal, TargetDiagonal, TargetDiagonal),     // NW
+    };
+    static readonly Vector3[] leftArmTargetsFacingPlusZWithL2 =
+    {
+        new Vector3(0f, -1f, 0f),  // N  straight down
+        new Vector3(TargetDiagonal, -TargetDiagonal, TargetDiagonal),     // NE
+        new Vector3(1f, 0f, 0f),   // E  (filled in)
+        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // SE (filled in: mirror of SW)
+        new Vector3(0f, 0f, -1f),  // S  straight behind (outside the arm's horizontal limits, see note)
+        new Vector3(-TargetDiagonal, TargetDiagonal, -TargetDiagonal),    // SW
+        new Vector3(-1f, 0f, 0f),  // W  (filled in)
+        new Vector3(-TargetDiagonal, -TargetDiagonal, TargetDiagonal),    // NW
+    };
+    static readonly Vector3[] leftArmTargetsFacingMinusZ =
+    {
+        new Vector3(0f, 1f, 0f),   // N  straight up
+        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // NE
+        new Vector3(1f, 0f, 0f),   // E
+        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // SE
+        new Vector3(0f, 0f, -1f),  // S  -Vector3.forward (forward for the WR)
+        new Vector3(-TargetDiagonal, TargetDiagonal, -TargetDiagonal),    // SW
+        new Vector3(-1f, 0f, 0f),  // W
+        new Vector3(-TargetDiagonal, TargetDiagonal, -TargetDiagonal),    // NW
+    };
+    static readonly Vector3[] leftArmTargetsFacingMinusZWithL2 =
+    {
+        new Vector3(0f, TargetHalf, TargetHalf),     // N  (filled in: between NE and NW)
+        new Vector3(TargetDiagonal, TargetDiagonal, TargetDiagonal),      // NE
+        new Vector3(1f, 0f, 0f),   // E  (filled in)
+        new Vector3(TargetDiagonal, -TargetDiagonal, -TargetDiagonal),    // SE
+        new Vector3(0f, -1f, 0f),  // S  straight down
+        new Vector3(-TargetDiagonal, -TargetDiagonal, -TargetDiagonal),   // SW
+        new Vector3(-1f, 0f, 0f),  // W  (filled in)
+        new Vector3(-TargetDiagonal, TargetDiagonal, TargetDiagonal),     // NW
+    };
+
     /// <summary>
-    /// Left stick -> direction the left arm (-right) should point, in world space (x is always world x).
-    /// facingSign = which way the WR faced along world z when the catch started.
-    ///
-    /// Facing +Z (towards Vector3.forward):
-    ///   y >= 0: towards forward, rising on the diagonals:          (x, min(|x|,|y|), y)
-    ///           (0,1) -> (0,0,1)   (.71,.71) -> (.58,.58,.58)   (1,0) -> (1,0,0)
-    ///   y <  0: towards straight up, behind the head on diagonals: (x, |y|, -min(|x|,|y|))
-    ///           (0,-1) -> (0,1,0)  (.71,-.71) -> (.58,.58,-.58)
-    /// Facing -Z (stick up = up, stick down = forward relative to the WR = -Vector3.forward):
-    ///   y >= 0: towards straight up, leaning -Z on the diagonals:  (x, |y|, -min(|x|,|y|))
-    ///           (0,1) -> (0,1,0)   (.71,.71) -> (.58,.58,-.58)
-    ///   y <  0: towards -Vector3.forward, rising on the diagonals: (x, min(|x|,|y|), y)
-    ///           (0,-1) -> (0,0,-1) (.71,-.71) -> (.58,.58,-.58)
+    /// Left stick -> direction the left arm (-right) should point, in world space.
+    /// facingSign = which way the WR faced along world z when the catch started (+1 / -1).
+    /// l2Held = L2 held while catching. Picks one of the four tables above and blends between the two
+    /// stick directions either side of the stick's angle.
     /// World space (not relative to the WR) so turning the WR towards a target behind it brings the target in.
     /// </summary>
-    static Vector3 GetLeftArmCatchTarget(Vector2 stick, float facingSign)
+    static Vector3 GetLeftArmCatchTarget(Vector2 stick, float facingSign, bool l2Held)
     {
-        float smaller = Mathf.Min(Mathf.Abs(stick.x), Mathf.Abs(stick.y));
-        bool towardsUp = facingSign >= 0f ? stick.y < 0f : stick.y >= 0f;
-        Vector3 target = towardsUp
-            ? new Vector3(stick.x, Mathf.Abs(stick.y), -smaller)
-            : new Vector3(stick.x, smaller, stick.y);
-        return target.sqrMagnitude > 1e-6f ? target.normalized : Vector3.zero;
+        if (stick.sqrMagnitude < 1e-6f)
+        {
+            return Vector3.zero;
+        }
+        Vector3[] targets = facingSign >= 0f
+            ? (l2Held ? leftArmTargetsFacingPlusZWithL2 : leftArmTargetsFacingPlusZ)
+            : (l2Held ? leftArmTargetsFacingMinusZWithL2 : leftArmTargetsFacingMinusZ);
+        float angle = Mathf.Atan2(stick.x, stick.y) * Mathf.Rad2Deg; // 0 = N, 90 = E, clockwise
+        if (angle < 0f)
+        {
+            angle += 360f;
+        }
+        int index = Mathf.FloorToInt(angle / 45f) % 8;
+        float blend = (angle - index * 45f) / 45f;
+        return Vector3.Slerp(targets[index].normalized, targets[(index + 1) % 8].normalized, blend).normalized;
     }
 
     /// <summary>
@@ -2052,7 +2103,7 @@ public class WR : MonoBehaviour
                         //tForLeftArm = -leftArm.Find("LeftArm").right + new Vector3(movementInput.x, 0f, movementInput.y).normalized;
                     }
                     // Stick -> left arm target (world space, see GetLeftArmCatchTarget). Overrides the two branches above.
-                    tForLeftArm = GetLeftArmCatchTarget(movementInput, leftArmCatchFacingSign);
+                    tForLeftArm = GetLeftArmCatchTarget(movementInput, leftArmCatchFacingSign, false /* TODO: L2 held while catching */);
                     List<KeyValuePair<Axis, float>> instructions = new List<KeyValuePair<Axis, float>>();
 
 
