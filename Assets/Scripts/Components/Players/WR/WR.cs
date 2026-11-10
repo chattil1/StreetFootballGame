@@ -1769,7 +1769,6 @@ public class WR : MonoBehaviour
     // Order: N (0,1), NE (.71,.71), E (1,0), SE (.71,-.71), S (0,-1), SW (-.71,-.71), W (-1,0), NW (-.71,.71).
     // Stick angles in between blend smoothly between the two neighbours (see GetLeftArmCatchTarget).
     const float TargetDiagonal = 0.57735f; // 1 / sqrt(3)
-    const float TargetHalf = 0.70711f; // 1 / sqrt(2)
     static readonly Vector3[] leftArmTargetsFacingPlusZ =
     {
         new Vector3(0f, 0f, 1f),   // N  forward
@@ -1805,7 +1804,7 @@ public class WR : MonoBehaviour
     };
     static readonly Vector3[] leftArmTargetsFacingMinusZWithL2 =
     {
-        new Vector3(0f, TargetHalf, TargetHalf),     // N
+        new Vector3(0f, 0f, 1f),   // N  Vector3.forward (behind the WR; past the arm's horizontal limit, so the WR turns)
         new Vector3(TargetDiagonal, TargetDiagonal, TargetDiagonal),      // NE
         new Vector3(1f, 0f, 0f),   // E
         new Vector3(TargetDiagonal, -TargetDiagonal, -TargetDiagonal),    // SE
