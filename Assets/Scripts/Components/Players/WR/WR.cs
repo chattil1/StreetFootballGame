@@ -83,10 +83,6 @@ public class WR : MonoBehaviour
     private bool yButtonPressed = false;
     
     private bool isCatching = false;
-    // Which way the WR faced (world z sign) when the current catch attempt started; picks the stick mapping
-    // in GetLeftArmCatchTarget. Locked for the whole attempt so the root turn assist can't flip it.
-    private float leftArmCatchFacingSign = 1f;
-    private bool wasCatchingLastFrame = false;
     Quaternion previousLeftArmRotation;
     Quaternion previousRightArmRotation;
     Quaternion previousLeftShoulderRotation;
@@ -919,11 +915,6 @@ public class WR : MonoBehaviour
         Vector3 forceForBallDir = footballInstance.transform.position - footballSpot;
 
         isCatching = rTriggerPressed && yButtonPressed && movementInput.magnitude > 0f;
-        if (isCatching && !wasCatchingLastFrame)
-        {
-            leftArmCatchFacingSign = transform.forward.z >= 0f ? 1f : -1f;
-        }
-        wasCatchingLastFrame = isCatching;
         //Vector2 movementInput = playerInput.actions["Catch"].ReadValue<Vector2>();
         bool canRun = rTriggerPressed && wrAlignedForRun && !yButtonPressed && playerOnGround;
         bool canMoveAround = wrAlignedForRun && movementInput.magnitude > 0 && playerOnGround;
@@ -1765,79 +1756,40 @@ public class WR : MonoBehaviour
         planeViewModel.horizontalRotation = horizontalRotation;
         planeViewModel.verticalRotation = verticalRotation;
     }
-    // Left arm catch targets for the 8 stick directions, in world space (x is always world x).
-    // Order: N (0,1), NE (.71,.71), E (1,0), SE (.71,-.71), S (0,-1), SW (-.71,-.71), W (-1,0), NW (-.71,.71).
-    // Stick angles in between blend smoothly between the two neighbours (see GetLeftArmCatchTarget).
-    const float TargetDiagonal = 0.57735f; // 1 / sqrt(3)
-    static readonly Vector3[] leftArmTargetsFacingPlusZ =
-    {
-        new Vector3(0f, 0f, 1f),   // N  forward
-        new Vector3(TargetDiagonal, TargetDiagonal, TargetDiagonal),      // NE
-        new Vector3(1f, 0f, 0f),   // E
-        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // SE behind the head
-        new Vector3(0f, 1f, 0f),   // S  straight up
-        new Vector3(-TargetDiagonal, TargetDiagonal, TargetDiagonal),     // SW
-        new Vector3(-1f, 0f, 0f),  // W
-        new Vector3(-TargetDiagonal, TargetDiagonal, TargetDiagonal),     // NW
-    };
-    static readonly Vector3[] leftArmTargetsFacingPlusZWithL2 =
-    {
-        new Vector3(0f, -1f, 0f),  // N  straight down
-        new Vector3(TargetDiagonal, -TargetDiagonal, TargetDiagonal),     // NE
-        new Vector3(1f, 0f, 0f),   // E
-        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // SE
-        new Vector3(0f, 0f, -1f),  // S  straight behind (past the arm's horizontal limit, so the WR turns)
-        new Vector3(-TargetDiagonal, TargetDiagonal, -TargetDiagonal),    // SW
-        new Vector3(-1f, 0f, 0f),  // W
-        new Vector3(-TargetDiagonal, -TargetDiagonal, TargetDiagonal),    // NW
-    };
-    static readonly Vector3[] leftArmTargetsFacingMinusZ =
-    {
-        new Vector3(0f, 1f, 0f),   // N  straight up
-        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // NE
-        new Vector3(1f, 0f, 0f),   // E
-        new Vector3(TargetDiagonal, TargetDiagonal, -TargetDiagonal),     // SE
-        new Vector3(0f, 0f, -1f),  // S  -Vector3.forward (forward for the WR)
-        new Vector3(-TargetDiagonal, TargetDiagonal, -TargetDiagonal),    // SW
-        new Vector3(-1f, 0f, 0f),  // W
-        new Vector3(-TargetDiagonal, TargetDiagonal, -TargetDiagonal),    // NW
-    };
-    static readonly Vector3[] leftArmTargetsFacingMinusZWithL2 =
-    {
-        new Vector3(0f, 0f, 1f),   // N  Vector3.forward (behind the WR; past the arm's horizontal limit, so the WR turns)
-        new Vector3(TargetDiagonal, TargetDiagonal, TargetDiagonal),      // NE
-        new Vector3(1f, 0f, 0f),   // E
-        new Vector3(TargetDiagonal, -TargetDiagonal, -TargetDiagonal),    // SE
-        new Vector3(0f, -1f, 0f),  // S  straight down
-        new Vector3(-TargetDiagonal, -TargetDiagonal, -TargetDiagonal),   // SW
-        new Vector3(-1f, 0f, 0f),  // W
-        new Vector3(-TargetDiagonal, TargetDiagonal, TargetDiagonal),     // NW
-    };
-
     /// <summary>
-    /// Left stick -> direction the left arm (-right) should point, in world space.
-    /// facingSign = which way the WR faced along world z when the catch started (+1 / -1).
-    /// l2Held = L2 held while catching. Picks one of the four tables above and blends between the two
-    /// stick directions either side of the stick's angle.
-    /// World space (not relative to the WR) so turning the WR towards a target behind it brings the target in.
+    /// Left stick -> direction the left arm (-right) should point, always in the 180 degrees in front of the WR.
+    /// Built in the WR's own frame: x = WR right, y = up, z = WR forward projected onto the Vector3.up plane,
+    /// then returned in world space.
+    ///   Without L2: (x, y, min(|x|,|y|))                 stick up = straight up, stick down = straight down
+    ///   With L2:    (x, sign(y) * min(|x|,|y|), |y|)     stick up / down = WR forward (L2 tips the aim forward)
+    ///   Stick left / right = straight out to that side either way.
+    /// e.g. WR facing Vector3.forward:
+    ///   (0,1)        -> (0,1,0)               L2: (0,0,1)
+    ///   (0,-1)       -> (0,-1,0)              L2: (0,0,1)
+    ///   (.5,.87)     -> (.45,.77,.45)         L2: (.45,.45,.77)
+    ///   (.71,-.71)   -> (.58,-.58,.58)        L2: (.58,-.58,.58)
+    ///   (1,0)        -> (1,0,0)               L2: (1,0,0)
     /// </summary>
-    static Vector3 GetLeftArmCatchTarget(Vector2 stick, float facingSign, bool l2Held)
+    Vector3 GetLeftArmCatchTarget(Vector2 stick, bool l2Held)
     {
         if (stick.sqrMagnitude < 1e-6f)
         {
             return Vector3.zero;
         }
-        Vector3[] targets = facingSign >= 0f
-            ? (l2Held ? leftArmTargetsFacingPlusZWithL2 : leftArmTargetsFacingPlusZ)
-            : (l2Held ? leftArmTargetsFacingMinusZWithL2 : leftArmTargetsFacingMinusZ);
-        float angle = Mathf.Atan2(stick.x, stick.y) * Mathf.Rad2Deg; // 0 = N, 90 = E, clockwise
-        if (angle < 0f)
+        float smaller = Mathf.Min(Mathf.Abs(stick.x), Mathf.Abs(stick.y));
+        Vector3 local = l2Held
+            ? new Vector3(stick.x, stick.y > 0f ? smaller : stick.y < 0f ? -smaller : 0f, Mathf.Abs(stick.y))
+            : new Vector3(stick.x, stick.y, smaller);
+
+        Vector3 wrForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+        if (wrForward.sqrMagnitude < 1e-6f)
         {
-            angle += 360f;
+            wrForward = Vector3.forward;
         }
-        int index = Mathf.FloorToInt(angle / 45f) % 8;
-        float blend = (angle - index * 45f) / 45f;
-        return Vector3.Slerp(targets[index].normalized, targets[(index + 1) % 8].normalized, blend).normalized;
+        wrForward.Normalize();
+        Vector3 wrRight = Vector3.Cross(Vector3.up, wrForward);
+        Vector3 target = wrRight * local.x + Vector3.up * local.y + wrForward * local.z;
+        return target.sqrMagnitude > 1e-6f ? target.normalized : Vector3.zero;
     }
 
     /// <summary>
@@ -2114,8 +2066,8 @@ public class WR : MonoBehaviour
                         tForLeftArm = (expectedPosition - leftHand.Find("LeftPalmCatchArea").position).normalized;
                         //tForLeftArm = -leftArm.Find("LeftArm").right + new Vector3(movementInput.x, 0f, movementInput.y).normalized;
                     }
-                    // Stick -> left arm target (world space, see GetLeftArmCatchTarget). Overrides the two branches above.
-                    tForLeftArm = GetLeftArmCatchTarget(movementInput, leftArmCatchFacingSign, l2TriggerPressed && yButtonPressed);
+                    // Stick -> left arm target, in front of the WR (see GetLeftArmCatchTarget). Overrides the two branches above.
+                    tForLeftArm = GetLeftArmCatchTarget(movementInput, l2TriggerPressed && yButtonPressed);
                     List<KeyValuePair<Axis, float>> instructions = new List<KeyValuePair<Axis, float>>();
 
 

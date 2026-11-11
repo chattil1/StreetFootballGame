@@ -401,8 +401,13 @@ namespace FootballGame.TransformOperations.Models {
         /// </summary>
         public static bool UseLegacyMultiAxisAiming = false;
 
-        /// <summary>When the arm can't reach the target inside its horizontal limits, turn the root (Vector3.up only).</summary>
-        public static bool AllowRootTurnAssist = true;
+        /// <summary>
+        /// When the arm can't reach the target inside its horizontal limits, turn the root (Vector3.up only).
+        /// Off: catch targets are now relative to the WR and always in front of it, so they never need it,
+        /// and turning the root would also turn a WR-relative target (the WR would keep spinning).
+        /// Only turn it on for world-space targets.
+        /// </summary>
+        public static bool AllowRootTurnAssist = false;
 
         /// <summary>
         /// If the target is no more than this many degrees further from the closest reachable point than from
