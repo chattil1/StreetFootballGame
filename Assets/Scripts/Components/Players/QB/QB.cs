@@ -994,13 +994,13 @@ public class QB : MonoBehaviour
             float fvXCamera = forceVectorFinalCamera.x > 0 ? forceVectorFinalCamera.x : 1;
             float fvZCamera = forceVectorFinalCamera.z > 0 ? forceVectorFinalCamera.z : 1;
             //timeToCatch = Mathf.Sqrt((forceVectorFinal.x * forceVectorFinal.x) + (forceVectorFinal.z * forceVectorFinal.z)) / (throwSpeed);
-            // LEAD THROW: aim where the WR's left palm will be if they keep running the way they face at top
-            // speed, at the palm's current height. The flight time comes from the distance to that point at
+            // LEAD THROW: aim where the WR's left shoulder will be if they keep running the way they face at top
+            // speed, at the shoulder's current height (the shoulder, not the palm: the palm moves with the arm swing). The flight time comes from the distance to that point at
             // leadThrowSpeedMultiplier x the WR's top speed (clamped), and the launch velocity below makes the
             // ball arrive there in exactly that time. The WR's movement / aim assist covers the difference
             // when the WR doesn't run straight.
             WR receiver = wrToUse.GetComponent<WR>();
-            Vector3 receiverPalm = receiver.GetLeftHandChildPosition("LeftPalmCatchArea");
+            Vector3 receiverShoulder = receiver.GetLeftShoulderPosition();
             Vector3 receiverRunDirection = Vector3.ProjectOnPlane(wrToUse.forward, Vector3.up);
             receiverRunDirection = receiverRunDirection.sqrMagnitude > 1e-6f ? receiverRunDirection.normalized : Vector3.forward;
             float receiverTopSpeed = receiver.GetTargetSpeed();
@@ -1009,12 +1009,12 @@ public class QB : MonoBehaviour
             timeToCatch = leadThrowMinFlightTime;
             for (int leadIteration = 0; leadIteration < 5; leadIteration++)
             {
-                Vector3 leadPoint = receiverPalm + receiverRunDirection * receiverTopSpeed * timeToCatch + handOffset;
+                Vector3 leadPoint = receiverShoulder + receiverRunDirection * receiverTopSpeed * timeToCatch + handOffset;
                 float horizontalDistance = Vector3.ProjectOnPlane(leadPoint - football.transform.position, Vector3.up).magnitude;
                 timeToCatch = Mathf.Clamp(horizontalDistance / leadBallSpeed, leadThrowMinFlightTime, leadThrowMaxFlightTime);
             }
-            throwingTargetPosition = receiverPalm + receiverRunDirection * receiverTopSpeed * timeToCatch + handOffset;
-            throwingTargetPosition = new Vector3(throwingTargetPosition.x, receiverPalm.y, throwingTargetPosition.z);
+            throwingTargetPosition = receiverShoulder + receiverRunDirection * receiverTopSpeed * timeToCatch + handOffset;
+            throwingTargetPosition = new Vector3(throwingTargetPosition.x, receiverShoulder.y, throwingTargetPosition.z);
             /* Previous target: assumed the WR keeps its current velocity for exactly 4 seconds.
             timeToCatch = 4f;
             Vector3 testVec = wrX.GetComponent<WR>().GetExpectedTargetUsingLeftHandPosition(timeToCatch) + (-handForCatch.forward * (wrX.GetComponent<WR>().GetDistanceBetweenHands() / 2));

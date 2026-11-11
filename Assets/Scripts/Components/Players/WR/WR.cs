@@ -41,16 +41,14 @@ public class WR : MonoBehaviour
     public float armSwingForwardAmplitude = 60f;
     [Tooltip("Degrees the upper arms swing back from hanging straight down.")]
     public float armSwingBackAmplitude = 45f;
-    [Tooltip("Degrees the arm angles in towards the chest at the front of the swing.")]
-    public float armSwingAcrossBody = 12f;
     [Tooltip("How far each shoulder moves forward / back with its arm, as a fraction of the upper arm's length.")]
     public float shoulderLungeFraction = 0.3f;
     [Tooltip("Extra forward lean of the swing centre, in degrees.")]
     public float armSwingForwardBias = 5f;
     [Tooltip("Elbow bend: forearm angle forward of the upper arm, in degrees.")]
     public float armSwingElbowBend = 85f;
-    [Tooltip("How far the upper arms angle out from the body, in degrees.")]
-    public float armSwingAbduction = 10f;
+    [Tooltip("How far the upper arms angle out from straight down, in degrees (0 = straight down from the shoulder).")]
+    public float armSwingAbduction = 8f;
     [Tooltip("Shifts the swing against the run cycle (0..1). Change if the arms swing with the same-side leg.")]
     [Range(0f, 1f)] public float armSwingPhaseOffset = 0f;
     [Tooltip("Arm swings per run animation cycle (1 = one forward/back per loop of the run clip).")]
@@ -93,8 +91,10 @@ public class WR : MonoBehaviour
     public float moveAssistFullTime = 1f;
     [Tooltip("No movement assist if the landing spot is more than this many degrees from the stick direction.")]
     public float moveAssistMaxAngle = 100f;
-    [Tooltip("While catching (Y), most degrees per second the movement assist turns the WR.")]
-    public float catchAssistTurnSpeed = 90f;
+    [Tooltip("While catching (Y), the WR's top speed for getting to the ball in time, as a multiple of its run speed.")]
+    public float catchRunMaxSpeedMultiplier = 1.5f;
+    [Tooltip("While catching (Y), how far (degrees) the WR may drift sideways from where it faces to get to the ball.")]
+    public float catchRunMaxSideAngle = 60f;
     [Tooltip("How far ahead to predict the ball, in seconds.")]
     public float ballPredictionTime = 6f;
     private readonly List<Vector3> predictedBallPath = new List<Vector3>();
@@ -1800,7 +1800,10 @@ public class WR : MonoBehaviour
         if (canRun)
         {
             Vector3 desiredPosition = Vector3.MoveTowards(transform.position, transform.position + transform.forward * targetSpeed, runAcceleration * Time.fixedDeltaTime);
-            Vector3 desiredVelocity = Vector3.MoveTowards(gameObject.GetComponent<Rigidbody>().velocity, editedForward.normalized * targetSpeed, runAcceleration * Time.fixedDeltaTime);
+            // While catching (Y), run at whatever velocity gets the left palm to where the ball comes down when it
+            // gets there; otherwise run forward at top speed.
+            Vector3 runVelocity = TryGetCatchRunVelocity(out Vector3 catchRunVelocity) ? catchRunVelocity : editedForward.normalized * targetSpeed;
+            Vector3 desiredVelocity = Vector3.MoveTowards(gameObject.GetComponent<Rigidbody>().velocity, runVelocity, runAcceleration * Time.fixedDeltaTime);
             Vector3 acceleration = (desiredVelocity - gameObject.GetComponent<Rigidbody>().velocity) / Time.fixedDeltaTime;
             gameObject.GetComponent<Rigidbody>().AddForce(acceleration * gameObject.GetComponent<Rigidbody>().mass, ForceMode.Force);
             gameObject.GetComponent<Animator>().SetBool("runningForward", true);
@@ -1962,6 +1965,45 @@ public class WR : MonoBehaviour
     }
 
     /// <summary>
+    /// While catching (Y) with the ball in the air: the ground velocity that puts the left palm where the ball comes
+    /// down to the palm's height, exactly when it gets there (distance / time). Capped at
+    /// catchRunMaxSpeedMultiplier x the run speed, and at catchRunMaxSideAngle from the way the WR faces (the WR
+    /// doesn't turn while catching). False if not catching or the ball isn't coming down ahead of the palm.
+    /// </summary>
+    bool TryGetCatchRunVelocity(out Vector3 velocity)
+    {
+        velocity = Vector3.zero;
+        if (!isCatching || leftHand == null)
+        {
+            return false;
+        }
+        Transform palm = leftHand.Find("LeftPalmCatchArea");
+        Vector3 palmPosition = palm != null ? palm.position : leftHand.position;
+        if (!PredictBallLanding(palmPosition.y, out Vector3 landingSpot, out float seconds))
+        {
+            return false;
+        }
+        Vector3 toSpot = Vector3.ProjectOnPlane(landingSpot - palmPosition, Vector3.up);
+        Vector3 needed = toSpot / Mathf.Max(seconds, Time.fixedDeltaTime);
+        if (needed.sqrMagnitude < 1e-8f)
+        {
+            return true; // already there: stand still
+        }
+        GetWRFrame(out Vector3 wrForward, out Vector3 wrRight);
+        Vector3 direction = Vector3.RotateTowards(wrForward, needed.normalized, catchRunMaxSideAngle * Mathf.Deg2Rad, 0f);
+        float speed = Mathf.Min(needed.magnitude, targetSpeed * Mathf.Max(0f, catchRunMaxSpeedMultiplier));
+        velocity = direction * speed;
+        return true;
+    }
+
+    /// <summary>Left shoulder joint (top of the left upper arm), for aiming throws.</summary>
+    public Vector3 GetLeftShoulderPosition()
+    {
+        Transform upperArm = leftArm != null ? leftArm.Find("LeftArm") : null;
+        return upperArm != null ? upperArm.position : transform.position;
+    }
+
+    /// <summary>
     /// Aim assist: pulls the left arm's stick target towards where the ball will be when it reaches the WR,
     /// starting aimAssistStartTime before it arrives and up to aimAssistMaxWeight by aimAssistFullTime.
     /// No pull if the ball will pass far away from the WR.
@@ -2118,7 +2160,20 @@ public class WR : MonoBehaviour
         swingBaseRightForeArmLocalRotation = rightForeArm.localRotation;
         runArmSwingDrawn = true;
 
+        // Swing in the torso's frame: the real left -> right shoulder line (follows any torso twist from the run
+        // animation), so each arm stays in its own front-to-back plane through its shoulder, shoulder-width apart.
         GetWRFrame(out Vector3 wrForward, out Vector3 wrRight);
+        Vector3 shoulderLine = Vector3.ProjectOnPlane(rightUpperArm.position - leftUpperArm.position, Vector3.up);
+        if (shoulderLine.sqrMagnitude > 1e-8f)
+        {
+            Vector3 torsoRight = shoulderLine.normalized;
+            Vector3 torsoForward = Vector3.Cross(torsoRight, Vector3.up);
+            if (Vector3.Dot(torsoForward, wrForward) > 0f)
+            {
+                wrRight = torsoRight;
+                wrForward = torsoForward;
+            }
+        }
         // -1 (fully back) .. 1 (fully forward); left arm leads, right arm opposite.
         float swingAmount = Mathf.Sin(2f * Mathf.PI * (armSwingPhase + armSwingPhaseOffset));
         SwingArm(leftArm, leftUpperArm, leftForeArm, leftHand, -wrRight, wrForward, wrRight, swingAmount);
@@ -2132,9 +2187,10 @@ public class WR : MonoBehaviour
         // Shoulder lunges forward / back with its arm.
         shoulder.position += wrForward * (swingAmount * shoulderLungeFraction * upperArmLength * armSwingWeight);
 
-        // Upper arm: hanging down and a little out, swung forward (and in across the chest) or back.
+        // Upper arm: hanging down (never angled in past straight down, so it can't cross the chest), swung
+        // forward or back in the front-to-back plane through the shoulder.
         float swingAngle = swingAmount >= 0f ? swingAmount * armSwingForwardAmplitude : swingAmount * armSwingBackAmplitude;
-        float outAngle = armSwingAbduction - Mathf.Max(0f, swingAmount) * armSwingAcrossBody;
+        float outAngle = Mathf.Max(0f, armSwingAbduction);
         Vector3 hanging = (Vector3.down * Mathf.Cos(outAngle * Mathf.Deg2Rad) + outward * Mathf.Sin(outAngle * Mathf.Deg2Rad)).normalized;
         // Positive angles around wrRight swing backwards, so forward = negative.
         Vector3 upperDirection = Quaternion.AngleAxis(-(swingAngle + armSwingForwardBias), wrRight) * hanging;
@@ -3132,18 +3188,8 @@ public class WR : MonoBehaviour
                     }
                     break;
                 case PlayerState.attemptingCatch:
-                    // Keep running while catching. The stick is aiming the arm, so only the movement assist steers,
-                    // turning at most catchAssistTurnSpeed degrees per second towards where the ball comes down.
-                    if (playerOnGround && rTriggerPressed)
-                    {
-                        Vector3 catchRunDirection = Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
-                        Vector3 assistedCatchRunDirection = ApplyMovementAssist(catchRunDirection);
-                        if (Vector3.Angle(catchRunDirection, assistedCatchRunDirection) > 0.5f)
-                        {
-                            rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, transform, leftHand, Vector2.zero, transform.forward, assistedCatchRunDirection, Vector3.up, Vector3.forward, catchAssistTurnSpeed * Time.deltaTime, "LeftArm", new PlaneViewModel() { });
-                            rootRotation = rootController.AlignTransformAxis();
-                        }
-                    }
+                    // No turning while catching (Y): the WR keeps facing the same way. Its run speed / direction
+                    // while catching comes from TryGetCatchRunVelocity in FixedUpdate.
                     /*if ((isLeftStickHeldInPlace || onLeftAnalogStickTouched) && playerOnGround) {
                         Vector2 movementInput = playerInput.actions["Catch"].ReadValue<Vector2>();
                         rotationAmount = 60f * movementInput.magnitude;
