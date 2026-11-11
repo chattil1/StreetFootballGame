@@ -35,6 +35,51 @@ public class WR : MonoBehaviour
     public Transform armEndSpot;
     public Transform leftHand;
     public Transform rightHand;
+
+    [Header("Run Arm Swing (procedural, synced to the run animation)")]
+    [Tooltip("Degrees the upper arms swing forward / back from hanging straight down.")]
+    public float armSwingAmplitude = 35f;
+    [Tooltip("Extra forward lean of the swing centre, in degrees.")]
+    public float armSwingForwardBias = 5f;
+    [Tooltip("Elbow bend: forearm angle forward of the upper arm, in degrees.")]
+    public float armSwingElbowBend = 85f;
+    [Tooltip("How far the upper arms angle out from the body, in degrees.")]
+    public float armSwingAbduction = 10f;
+    [Tooltip("Shifts the swing against the run cycle (0..1). Change if the arms swing with the same-side leg.")]
+    [Range(0f, 1f)] public float armSwingPhaseOffset = 0f;
+    [Tooltip("Arm swings per run animation cycle (1 = one forward/back per loop of the run clip).")]
+    public float armSwingCyclesPerLoop = 1f;
+    [Tooltip("Seconds to blend the arms into / out of the swing (e.g. after letting go of catch).")]
+    public float armSwingBlendTime = 0.2f;
+    [Tooltip("Seconds per swing when the run state's timing isn't available (e.g. mid-transition).")]
+    public float armSwingFallbackCycleTime = 0.7f;
+    private float armSwingWeight = 0f;
+    private float armSwingPhase = 0f;
+    private Quaternion leftForeArmRestLocalRotation = Quaternion.identity;
+
+    [Header("Catch Assist (while the ball is in the air)")]
+    [Tooltip("Most the left arm's aim is pulled from the stick target towards the ball (0..1).")]
+    [Range(0f, 1f)] public float aimAssistMaxWeight = 0.5f;
+    [Tooltip("Seconds before the ball reaches the WR when the aim assist starts.")]
+    public float aimAssistStartTime = 1.5f;
+    [Tooltip("Seconds before the ball reaches the WR when the aim assist is at full weight.")]
+    public float aimAssistFullTime = 0.5f;
+    [Tooltip("No aim assist if the ball passes further than this many arm lengths from the shoulder.")]
+    public float aimAssistMaxMissArmLengths = 4f;
+    [Tooltip("Most the run direction is pulled from the stick towards where the ball comes down (0..1).")]
+    [Range(0f, 1f)] public float moveAssistMaxWeight = 0.5f;
+    [Tooltip("Seconds before the ball comes down when the movement assist starts.")]
+    public float moveAssistStartTime = 3f;
+    [Tooltip("Seconds before the ball comes down when the movement assist is at full weight.")]
+    public float moveAssistFullTime = 1f;
+    [Tooltip("No movement assist if the landing spot is more than this many degrees from the stick direction.")]
+    public float moveAssistMaxAngle = 100f;
+    [Tooltip("How far ahead to predict the ball, in seconds.")]
+    public float ballPredictionTime = 6f;
+    private readonly List<Vector3> predictedBallPath = new List<Vector3>();
+    private float predictedBallPathStep = 0f;
+    private int predictedBallPathFrame = -1;
+    private Quaternion rightForeArmRestLocalRotation = Quaternion.identity;
     public Vector3 elbowVerticalRotationAxis = Vector3.up;
     public Vector3 elbowForward = new Vector3(0, -1, 0);
     public Vector3 wrForward = new Vector3(1, 0, 1);
@@ -227,6 +272,24 @@ public class WR : MonoBehaviour
     }*/
     void Awake()
     {
+        // Forearm poses the run arm swing blends the elbow bend back to (see ApplyRunArmSwing).
+        // If the forearms weren't set in the Inspector, find the UMA bones by name under the shoulders.
+        if (leftForeArm == null && leftArm != null)
+        {
+            leftForeArm = FindChildRecursive(leftArm, "LeftForeArm");
+        }
+        if (rightForeArm == null && rightArm != null)
+        {
+            rightForeArm = FindChildRecursive(rightArm, "RightForeArm");
+        }
+        if (leftForeArm != null)
+        {
+            leftForeArmRestLocalRotation = leftForeArm.localRotation;
+        }
+        if (rightForeArm != null)
+        {
+            rightForeArmRestLocalRotation = rightForeArm.localRotation;
+        }
         float forwardSign = transform.forward.z > 0 ? 1f : -1f;
         currentLeftArmRotation = GetPlaneViewModel(Vector3.up, Vector3.forward * forwardSign, -leftArm.Find("LeftArm").right, -1f, 0f, 0f, currentLeftArmRotation.currentLeftRotation, currentLeftArmRotation.currentRightRotation, currentLeftArmRotation.currentUpRotation, currentLeftArmRotation.currentDownRotation, maxHorizontalRotationClockwise, maxHorizontalRotationCounterClockwise, maxVerticalRotationClockwise, maxVerticalRotationCounterClockwise);
         ITransformRotation leftArmDefaultController = GetTransformController(BodyPart.leftArm, Axis.inverseRight, Axis.inverseRight, Axis.forward, leftArm.Find("LeftArm"), transform, leftHand, Vector2.zero, transform.forward, Vector2.zero, -leftArm.Find("LeftArm").right, Vector3.forward * forwardSign, 30f * aimSpeed * Mathf.Pow(0f, 3f), "LeftArm", currentLeftArmRotation);
@@ -1756,6 +1819,296 @@ public class WR : MonoBehaviour
         planeViewModel.horizontalRotation = horizontalRotation;
         planeViewModel.verticalRotation = verticalRotation;
     }
+    static Transform FindChildRecursive(Transform parent, string childName)
+    {
+        foreach (Transform child in parent)
+        {
+            if (child.name == childName)
+            {
+                return child;
+            }
+            Transform found = FindChildRecursive(child, childName);
+            if (found != null)
+            {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The ball's rigidbody while it's in flight (thrown, not caught), otherwise null.</summary>
+    Rigidbody GetBallInFlight()
+    {
+        if (footballInstance == null || caughtFootball != null)
+        {
+            return null;
+        }
+        Transform ballParent = footballInstance.transform.parent;
+        if (ballParent == null || ballParent.GetComponent<TestCollision>() == null)
+        {
+            return null; // still in the QB's hand
+        }
+        Rigidbody ball = ballParent.GetComponent<Rigidbody>();
+        return ball != null && !ball.isKinematic ? ball : null;
+    }
+
+    /// <summary>
+    /// Predicted ball positions from now, one every predictedBallPathStep seconds, stepping the rigidbody the way
+    /// physics does (gravity + drag). Cached for the frame. False if the ball isn't in flight.
+    /// </summary>
+    bool PredictBallPath()
+    {
+        if (predictedBallPathFrame == Time.frameCount)
+        {
+            return predictedBallPath.Count > 1;
+        }
+        predictedBallPathFrame = Time.frameCount;
+        predictedBallPath.Clear();
+        Rigidbody ball = GetBallInFlight();
+        if (ball == null)
+        {
+            return false;
+        }
+        float step = Mathf.Max(0.005f, Time.fixedDeltaTime);
+        predictedBallPathStep = step;
+        Vector3 position = ball.position;
+        Vector3 velocity = ball.velocity;
+        Vector3 gravity = ball.useGravity ? Physics.gravity : Vector3.zero;
+        int steps = Mathf.CeilToInt(ballPredictionTime / step);
+        predictedBallPath.Add(position);
+        for (int i = 0; i < steps; i++)
+        {
+            velocity += gravity * step;
+            velocity *= 1f / (1f + ball.drag * step);
+            position += velocity * step;
+            predictedBallPath.Add(position);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// When the ball passes closest to the left shoulder (taking the WR's own movement into account):
+    /// seconds from now, how far it misses by, and the direction from the shoulder to the ball at that moment.
+    /// </summary>
+    bool PredictBallClosestApproach(out float seconds, out float missDistance, out Vector3 directionFromShoulder)
+    {
+        seconds = 0f;
+        missDistance = float.MaxValue;
+        directionFromShoulder = Vector3.zero;
+        if (!PredictBallPath())
+        {
+            return false;
+        }
+        Transform shoulder = leftArm.Find("LeftArm");
+        Rigidbody wrBody = GetComponent<Rigidbody>();
+        Vector3 wrVelocity = wrBody != null ? Vector3.ProjectOnPlane(wrBody.velocity, Vector3.up) : Vector3.zero;
+        for (int i = 0; i < predictedBallPath.Count; i++)
+        {
+            float t = i * predictedBallPathStep;
+            Vector3 shoulderThen = shoulder.position + wrVelocity * t;
+            Vector3 offset = predictedBallPath[i] - shoulderThen;
+            if (offset.magnitude < missDistance)
+            {
+                missDistance = offset.magnitude;
+                seconds = t;
+                directionFromShoulder = offset;
+            }
+        }
+        if (directionFromShoulder.sqrMagnitude < 1e-6f)
+        {
+            return false;
+        }
+        directionFromShoulder.Normalize();
+        return true;
+    }
+
+    /// <summary>Where (and in how many seconds) the ball next comes down through the given height.</summary>
+    bool PredictBallLanding(float height, out Vector3 landingSpot, out float seconds)
+    {
+        landingSpot = Vector3.zero;
+        seconds = 0f;
+        if (!PredictBallPath())
+        {
+            return false;
+        }
+        for (int i = 1; i < predictedBallPath.Count; i++)
+        {
+            Vector3 previous = predictedBallPath[i - 1];
+            Vector3 next = predictedBallPath[i];
+            if (previous.y >= height && next.y < height && next.y < previous.y)
+            {
+                float blend = (previous.y - height) / Mathf.Max(1e-6f, previous.y - next.y);
+                landingSpot = Vector3.Lerp(previous, next, blend);
+                seconds = (i - 1 + blend) * predictedBallPathStep;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Aim assist: pulls the left arm's stick target towards where the ball will be when it reaches the WR,
+    /// starting aimAssistStartTime before it arrives and up to aimAssistMaxWeight by aimAssistFullTime.
+    /// No pull if the ball will pass far away from the WR.
+    /// </summary>
+    Vector3 ApplyAimAssist(Vector3 stickTarget)
+    {
+        if (stickTarget.sqrMagnitude < 1e-6f || aimAssistMaxWeight <= 0f)
+        {
+            return stickTarget;
+        }
+        if (!PredictBallClosestApproach(out float seconds, out float missDistance, out Vector3 ballDirection))
+        {
+            return stickTarget;
+        }
+        float armLength = Vector3.Distance(leftArm.Find("LeftArm").position, leftHand.position);
+        float maxMiss = Mathf.Max(0.01f, armLength * aimAssistMaxMissArmLengths);
+        float timing = Mathf.Clamp01((aimAssistStartTime - seconds) / Mathf.Max(0.01f, aimAssistStartTime - aimAssistFullTime));
+        float proximity = Mathf.Clamp01(1f - missDistance / maxMiss);
+        float weight = aimAssistMaxWeight * timing * proximity;
+        return weight > 0f ? Vector3.Slerp(stickTarget.normalized, ballDirection, weight).normalized : stickTarget;
+    }
+
+    /// <summary>
+    /// Movement assist: pulls the run direction towards where the ball comes down to shoulder height,
+    /// starting moveAssistStartTime before it lands and up to moveAssistMaxWeight by moveAssistFullTime.
+    /// Only when the landing spot is within moveAssistMaxAngle of where the stick is steering.
+    /// </summary>
+    Vector3 ApplyMovementAssist(Vector3 stickDirection)
+    {
+        Vector3 flatStick = Vector3.ProjectOnPlane(stickDirection, Vector3.up);
+        if (flatStick.sqrMagnitude < 1e-6f || moveAssistMaxWeight <= 0f)
+        {
+            return stickDirection;
+        }
+        float catchHeight = leftArm.Find("LeftArm").position.y;
+        if (!PredictBallLanding(catchHeight, out Vector3 landingSpot, out float seconds))
+        {
+            return stickDirection;
+        }
+        Vector3 toLanding = Vector3.ProjectOnPlane(landingSpot - transform.position, Vector3.up);
+        if (toLanding.sqrMagnitude < 1e-6f || Vector3.Angle(flatStick, toLanding) > moveAssistMaxAngle)
+        {
+            return stickDirection;
+        }
+        float timing = Mathf.Clamp01((moveAssistStartTime - seconds) / Mathf.Max(0.01f, moveAssistStartTime - moveAssistFullTime));
+        float weight = moveAssistMaxWeight * timing;
+        return weight > 0f ? Vector3.Slerp(flatStick.normalized, toLanding.normalized, weight) : stickDirection;
+    }
+
+    static readonly string[] runStateNames = { "WRRunning", "metarig|Running" };
+
+    /// <summary>
+    /// Phase (0..1) of the run animation if a run state is playing on any Animator layer (or being blended into).
+    /// </summary>
+    bool TryGetRunAnimationPhase(out float phase)
+    {
+        phase = 0f;
+        Animator animator = playerAnimator != null ? playerAnimator : GetComponent<Animator>();
+        if (animator == null)
+        {
+            return false;
+        }
+        for (int layer = 0; layer < animator.layerCount; layer++)
+        {
+            AnimatorStateInfo current = animator.GetCurrentAnimatorStateInfo(layer);
+            AnimatorStateInfo next = animator.GetNextAnimatorStateInfo(layer);
+            foreach (string stateName in runStateNames)
+            {
+                if (current.IsName(stateName))
+                {
+                    phase = current.normalizedTime - Mathf.Floor(current.normalizedTime);
+                    return true;
+                }
+                if (animator.IsInTransition(layer) && next.IsName(stateName))
+                {
+                    phase = next.normalizedTime - Mathf.Floor(next.normalizedTime);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Swings the arms like a runner while R2 is held and the WR isn't catching (Y) or carrying the ball.
+    /// The swing follows the run animation's own timing so the arms stay in step with the legs:
+    /// upper arms swing forward/back around the WR's right axis, opposite to each other, with the elbows bent.
+    /// Blends in over armSwingBlendTime (e.g. coming out of a catch attempt). When a catch starts the upper arms
+    /// are left to the catch aim (which moves on from wherever the swing left them) and the elbow bend blends
+    /// back out, so the catching arm straightens again.
+    /// Works from bone positions (bone -> child joint), so it doesn't depend on each bone's local axes.
+    /// </summary>
+    void ApplyRunArmSwing()
+    {
+        if (leftArm == null || rightArm == null || leftForeArm == null || rightForeArm == null || leftHand == null || rightHand == null)
+        {
+            return;
+        }
+        bool hasRunPhase = TryGetRunAnimationPhase(out float runPhase);
+        if (hasRunPhase)
+        {
+            armSwingPhase = runPhase * armSwingCyclesPerLoop;
+        }
+        else
+        {
+            armSwingPhase += Time.deltaTime / Mathf.Max(0.05f, armSwingFallbackCycleTime);
+        }
+        bool swing = rTriggerPressed && !yButtonPressed && !isCatching && caughtFootball == null &&
+                     (hasRunPhase || armSwingWeight > 0f);
+
+        float blendRate = Time.deltaTime / Mathf.Max(0.01f, armSwingBlendTime);
+        armSwingWeight = Mathf.MoveTowards(armSwingWeight, swing ? 1f : 0f, blendRate);
+        if (armSwingWeight <= 0f)
+        {
+            return;
+        }
+
+        GetWRFrame(out Vector3 wrForward, out Vector3 wrRight);
+        float swingAngle = armSwingAmplitude * Mathf.Sin(2f * Mathf.PI * (armSwingPhase + armSwingPhaseOffset));
+        // Left arm forward when swingAngle > 0, right arm opposite.
+        SwingArm(leftArm.Find("LeftArm"), leftForeArm, leftHand, leftForeArmRestLocalRotation, -wrRight, wrRight, swingAngle, swing);
+        SwingArm(rightArm.Find("RightArm"), rightForeArm, rightHand, rightForeArmRestLocalRotation, wrRight, wrRight, -swingAngle, swing);
+    }
+
+    void SwingArm(Transform upperArm, Transform foreArm, Transform hand, Quaternion foreArmRestLocalRotation, Vector3 outward, Vector3 wrRight, float swingAngle, bool moveUpperArm)
+    {
+        if (upperArm == null)
+        {
+            return;
+        }
+        // Hanging straight down, angled out from the body a little.
+        Vector3 hanging = (Vector3.down * Mathf.Cos(armSwingAbduction * Mathf.Deg2Rad) + outward * Mathf.Sin(armSwingAbduction * Mathf.Deg2Rad)).normalized;
+        // Positive angles around wrRight swing backwards, so forward = negative.
+        float upperAngle = swingAngle + armSwingForwardBias;
+        Vector3 upperDirection = Quaternion.AngleAxis(-upperAngle, wrRight) * hanging;
+
+        if (moveUpperArm)
+        {
+            AimBoneAt(upperArm, foreArm.position, upperDirection, armSwingWeight);
+        }
+
+        // Elbow: bend relative to wherever the upper arm now points, blended from the forearm's rest pose.
+        Vector3 currentUpper = foreArm.position - upperArm.position;
+        Vector3 foreDirection = Quaternion.AngleAxis(-armSwingElbowBend, wrRight) * currentUpper.normalized;
+        foreArm.localRotation = foreArmRestLocalRotation;
+        AimBoneAt(foreArm, hand.position, foreDirection, 1f);
+        Quaternion bentLocalRotation = foreArm.localRotation;
+        foreArm.localRotation = Quaternion.Slerp(foreArmRestLocalRotation, bentLocalRotation, armSwingWeight);
+    }
+
+    // Rotate bone so the line from it to childJoint turns towards direction, by weight (0..1).
+    static void AimBoneAt(Transform bone, Vector3 childJoint, Vector3 direction, float weight)
+    {
+        Vector3 current = childJoint - bone.position;
+        if (current.sqrMagnitude < 1e-8f || direction.sqrMagnitude < 1e-8f)
+        {
+            return;
+        }
+        Vector3 desired = Vector3.Slerp(current.normalized, direction.normalized, Mathf.Clamp01(weight));
+        bone.rotation = Quaternion.FromToRotation(current.normalized, desired) * bone.rotation;
+    }
+
     /// <summary>
     /// Left stick -> direction the left arm (-right) should point, always in the 180 degrees in front of the WR.
     /// Built in the WR's own frame: x = WR right, y = up, z = WR forward projected onto the Vector3.up plane,
@@ -1781,15 +2134,64 @@ public class WR : MonoBehaviour
             ? new Vector3(stick.x, stick.y > 0f ? smaller : stick.y < 0f ? -smaller : 0f, Mathf.Abs(stick.y))
             : new Vector3(stick.x, stick.y, smaller);
 
-        Vector3 wrForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+        GetWRFrame(out Vector3 wrForward, out Vector3 wrRight);
+        Vector3 target = wrRight * local.x + Vector3.up * local.y + wrForward * local.z;
+        return target.sqrMagnitude > 1e-6f ? target.normalized : Vector3.zero;
+    }
+
+    /// <summary>WR forward projected onto the Vector3.up plane, and the matching right.</summary>
+    void GetWRFrame(out Vector3 wrForward, out Vector3 wrRight)
+    {
+        wrForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
         if (wrForward.sqrMagnitude < 1e-6f)
         {
             wrForward = Vector3.forward;
         }
         wrForward.Normalize();
-        Vector3 wrRight = Vector3.Cross(Vector3.up, wrForward);
-        Vector3 target = wrRight * local.x + Vector3.up * local.y + wrForward * local.z;
-        return target.sqrMagnitude > 1e-6f ? target.normalized : Vector3.zero;
+        wrRight = Vector3.Cross(Vector3.up, wrForward);
+    }
+
+    /// <summary>
+    /// Twist reference for the left arm: the direction arm.forward turns towards (around -arm.right) so the hand
+    /// faces the right way for a catch. Built from the arm target in the WR's frame (x right, y up, z forward):
+    ///   y &lt; 0:       keepTwist (the existing twist for low targets)
+    ///   |z| &gt;= .71:  up, made perpendicular to the target (hand up when reaching out in front)
+    ///   otherwise:   (-sign(x) * m, m, M) with m = min(|x|,|y|), M = max(|x|,|y|), made perpendicular
+    ///                e.g. (1,0,0) -> (0,0,1), (.87,.5,.5) -> (-.5,.5,.87), (-.87,.5,.5) -> (.5,.5,.87)
+    /// </summary>
+    Vector3 GetLeftArmTwistTarget(Vector3 armTarget, Vector3 keepTwist)
+    {
+        if (armTarget.sqrMagnitude < 1e-6f)
+        {
+            return keepTwist;
+        }
+        GetWRFrame(out Vector3 wrForward, out Vector3 wrRight);
+        Vector3 target = armTarget.normalized;
+        float x = Vector3.Dot(target, wrRight);
+        float y = Vector3.Dot(target, Vector3.up);
+        float z = Vector3.Dot(target, wrForward);
+        if (y < 0f)
+        {
+            return keepTwist;
+        }
+        Vector3 reference;
+        if (Mathf.Abs(z) >= 0.71f)
+        {
+            reference = Vector3.up;
+        }
+        else
+        {
+            float smaller = Mathf.Min(Mathf.Abs(x), Mathf.Abs(y));
+            float larger = Mathf.Max(Mathf.Abs(x), Mathf.Abs(y));
+            float sideSign = x >= 0f ? 1f : -1f;
+            reference = wrRight * (-sideSign * smaller) + Vector3.up * smaller + wrForward * larger;
+        }
+        Vector3 perpendicular = Vector3.ProjectOnPlane(reference, target);
+        if (perpendicular.sqrMagnitude < 1e-6f)
+        {
+            perpendicular = Vector3.ProjectOnPlane(wrForward, target);
+        }
+        return perpendicular.sqrMagnitude > 1e-6f ? perpendicular.normalized : keepTwist;
     }
 
     /// <summary>
@@ -2068,6 +2470,7 @@ public class WR : MonoBehaviour
                     }
                     // Stick -> left arm target, in front of the WR (see GetLeftArmCatchTarget). Overrides the two branches above.
                     tForLeftArm = GetLeftArmCatchTarget(movementInput, l2TriggerPressed && yButtonPressed);
+                    tForLeftArm = ApplyAimAssist(tForLeftArm);
                     List<KeyValuePair<Axis, float>> instructions = new List<KeyValuePair<Axis, float>>();
 
 
@@ -2150,6 +2553,8 @@ public class WR : MonoBehaviour
                     //Vector3 negativeAnalogAxisOfRotationVector = xMagGreater ? negativeAnalogAxisYMagGreater : new Vector3(xValueNeg, yCompValueNeg, zCompValueNeg);
                     Vector3 negativeAnalogAxisOfRotationVector = xMagEnough ? negativeAnalogAxisYMagGreater : new Vector3(xValueNeg, yCompValueNeg, zCompValueNeg);
                     targetTwist = movementInput.y <= 0 ? negativeAnalogAxisOfRotationVector : horizontalAnalogAxisOfRotationVector;
+                    // Hand orientation from the arm target (low targets keep the twist above).
+                    targetTwist = GetLeftArmTwistTarget(tForLeftArm, targetTwist);
                     float horizontalSign =  transform.forward.x >= 0f ? 1f : -1f;
                     float counterClockwiseSign = -1f;
                     bool isOverTopForward = currentLeftArmRotation.gonePastForwardTopLimit;
@@ -2709,6 +3114,7 @@ public class WR : MonoBehaviour
                         Vector3 moveDir = throwTargetPosition - transform.position;
                         //targetDirection = throwTargetPosition.magnitude > 0 ? new Vector3(moveDir.x, 0f, moveDir.z).normalized : rootDirection + new Vector3(movementInput.x, 0f, movementInput.y).normalized;
                         targetDirection = rootDirection + new Vector3(movementInput.x, 0f, movementInput.y).normalized;
+                        targetDirection = ApplyMovementAssist(targetDirection);
                         bool useInverse = Vector3.SignedAngle(rootDirection, targetDirection, Vector3.up) > Vector3.SignedAngle(rootDirection, targetDirection, -Vector3.up);
                         Vector3 aOR = useInverse ? -Vector3.up : Vector3.up;
                         rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, transform, leftHand, Vector2.zero, transform.forward, targetDirection, Vector3.up, Vector3.forward, rotationAmount, "LeftArm", new PlaneViewModel() { });
@@ -2738,6 +3144,7 @@ public class WR : MonoBehaviour
                 List<KeyValuePair<string, bool>> mainCameraRotation = mainCameraController.AlignTransformAxis();
                 MoveToPoint(caughtFootball.transform, caughtFootball.transform.position, leftHand.Find("LeftPalmCatchArea").GetChild(0).position, 1f);
             }
+            ApplyRunArmSwing();
             previousLeftArmRotation = leftArm.Find("LeftArm").rotation;
             previousRightArmRotation = rightArm.Find("RightArm").rotation;
             previousLeftShoulderRotation = leftArm.rotation;
