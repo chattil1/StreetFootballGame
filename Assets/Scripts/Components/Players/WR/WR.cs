@@ -37,8 +37,14 @@ public class WR : MonoBehaviour
     public Transform rightHand;
 
     [Header("Run Arm Swing (procedural, synced to the run animation)")]
-    [Tooltip("Degrees the upper arms swing forward / back from hanging straight down.")]
-    public float armSwingAmplitude = 35f;
+    [Tooltip("Degrees the upper arms swing forward from hanging straight down.")]
+    public float armSwingForwardAmplitude = 60f;
+    [Tooltip("Degrees the upper arms swing back from hanging straight down.")]
+    public float armSwingBackAmplitude = 45f;
+    [Tooltip("Degrees the arm angles in towards the chest at the front of the swing.")]
+    public float armSwingAcrossBody = 12f;
+    [Tooltip("How far each shoulder moves forward / back with its arm, as a fraction of the upper arm's length.")]
+    public float shoulderLungeFraction = 0.3f;
     [Tooltip("Extra forward lean of the swing centre, in degrees.")]
     public float armSwingForwardBias = 5f;
     [Tooltip("Elbow bend: forearm angle forward of the upper arm, in degrees.")]
@@ -55,7 +61,20 @@ public class WR : MonoBehaviour
     public float armSwingFallbackCycleTime = 0.7f;
     private float armSwingWeight = 0f;
     private float armSwingPhase = 0f;
-    private Quaternion leftForeArmRestLocalRotation = Quaternion.identity;
+    // The run arm swing is drawn on top of the arms' normal pose and never saved into it: the normal pose
+    // (shoulder positions, forearm rotations) is recorded before the swing is drawn and restored at the start of
+    // the next LateUpdate, so the catch aim, MoveToPoint and MoveToAlignWith always work on the normal pose.
+    private bool runArmSwingDrawn = false;
+    private Vector3 swingBaseLeftShoulderLocalPosition;
+    private Vector3 swingBaseRightShoulderLocalPosition;
+    private Vector3 swingBaseLeftUpperArmLocalPosition;
+    private Vector3 swingBaseRightUpperArmLocalPosition;
+    private Quaternion swingBaseLeftForeArmLocalRotation;
+    private Quaternion swingBaseRightForeArmLocalRotation;
+
+    [Header("Catching")]
+    [Tooltip("Old behaviour: pressing catch on the ground leaps the WR towards the stick. Off = keep running while catching.")]
+    public bool leapWhenCatching = false;
 
     [Header("Catch Assist (while the ball is in the air)")]
     [Tooltip("Most the left arm's aim is pulled from the stick target towards the ball (0..1).")]
@@ -74,12 +93,13 @@ public class WR : MonoBehaviour
     public float moveAssistFullTime = 1f;
     [Tooltip("No movement assist if the landing spot is more than this many degrees from the stick direction.")]
     public float moveAssistMaxAngle = 100f;
+    [Tooltip("While catching (Y), most degrees per second the movement assist turns the WR.")]
+    public float catchAssistTurnSpeed = 90f;
     [Tooltip("How far ahead to predict the ball, in seconds.")]
     public float ballPredictionTime = 6f;
     private readonly List<Vector3> predictedBallPath = new List<Vector3>();
     private float predictedBallPathStep = 0f;
     private int predictedBallPathFrame = -1;
-    private Quaternion rightForeArmRestLocalRotation = Quaternion.identity;
     public Vector3 elbowVerticalRotationAxis = Vector3.up;
     public Vector3 elbowForward = new Vector3(0, -1, 0);
     public Vector3 wrForward = new Vector3(1, 0, 1);
@@ -272,8 +292,7 @@ public class WR : MonoBehaviour
     }*/
     void Awake()
     {
-        // Forearm poses the run arm swing blends the elbow bend back to (see ApplyRunArmSwing).
-        // If the forearms weren't set in the Inspector, find the UMA bones by name under the shoulders.
+        // Forearms for the run arm swing. If they weren't set in the Inspector, find the UMA bones by name under the shoulders.
         if (leftForeArm == null && leftArm != null)
         {
             leftForeArm = FindChildRecursive(leftArm, "LeftForeArm");
@@ -281,14 +300,6 @@ public class WR : MonoBehaviour
         if (rightForeArm == null && rightArm != null)
         {
             rightForeArm = FindChildRecursive(rightArm, "RightForeArm");
-        }
-        if (leftForeArm != null)
-        {
-            leftForeArmRestLocalRotation = leftForeArm.localRotation;
-        }
-        if (rightForeArm != null)
-        {
-            rightForeArmRestLocalRotation = rightForeArm.localRotation;
         }
         float forwardSign = transform.forward.z > 0 ? 1f : -1f;
         currentLeftArmRotation = GetPlaneViewModel(Vector3.up, Vector3.forward * forwardSign, -leftArm.Find("LeftArm").right, -1f, 0f, 0f, currentLeftArmRotation.currentLeftRotation, currentLeftArmRotation.currentRightRotation, currentLeftArmRotation.currentUpRotation, currentLeftArmRotation.currentDownRotation, maxHorizontalRotationClockwise, maxHorizontalRotationCounterClockwise, maxVerticalRotationClockwise, maxVerticalRotationCounterClockwise);
@@ -979,10 +990,11 @@ public class WR : MonoBehaviour
 
         isCatching = rTriggerPressed && yButtonPressed && movementInput.magnitude > 0f;
         //Vector2 movementInput = playerInput.actions["Catch"].ReadValue<Vector2>();
-        bool canRun = rTriggerPressed && wrAlignedForRun && !yButtonPressed && playerOnGround;
+        // Run with R2 whether or not catch (Y) is held.
+        bool canRun = rTriggerPressed && wrAlignedForRun && playerOnGround;
         bool canMoveAround = wrAlignedForRun && movementInput.magnitude > 0 && playerOnGround;
         Vector3 jumpDir = footballInstance.transform.position - GetComponent<Rigidbody>().position;
-        if (isCatching && playerOnGround)
+        if (isCatching && playerOnGround && leapWhenCatching)
         {
             if (movementInput.magnitude > 0)
             {
@@ -1032,7 +1044,9 @@ public class WR : MonoBehaviour
         currentLayerWeight = Mathf.MoveTowards(currentLayerWeight, targetWeight, 1f);
         GetComponent<Animator>().SetLayerWeight(catchLayerIndex, currentLayerWeight);
 
-        if (!isCatching)
+        // Follow the arms' current pose when not catching, unless that pose has the run arm swing drawn on it
+        // (then the saved normal pose from LateUpdate is kept).
+        if (!isCatching && !runArmSwingDrawn)
         {
             previousLeftArmRotation = leftArm.Find("LeftArm").rotation;
             previousRightArmRotation = rightArm.Find("RightArm").rotation;
@@ -1780,8 +1794,9 @@ public class WR : MonoBehaviour
         //Vector3 editedForward = rb.gameObject.transform.forward;
         Vector2 movementInput = playerInput.actions["Catch"].ReadValue<Vector2>();
         //bool canRun = !timeOver && rTriggerPressed && wrAlignedForRun && !isCatching && playerOnGround;
-        bool canRun = !timeOver && wrAlignedForRun && !isCatching && playerOnGround && movementInput.magnitude > 0;
-        bool canMoveAround = !timeOver && !isCatching && movementInput.magnitude > 0 && playerOnGround;
+        // Catching (Y) no longer stops the run.
+        bool canRun = !timeOver && wrAlignedForRun && playerOnGround && movementInput.magnitude > 0;
+        bool canMoveAround = !timeOver && movementInput.magnitude > 0 && playerOnGround;
         if (canRun)
         {
             Vector3 desiredPosition = Vector3.MoveTowards(transform.position, transform.position + transform.forward * targetSpeed, runAcceleration * Time.fixedDeltaTime);
@@ -2031,17 +2046,48 @@ public class WR : MonoBehaviour
     }
 
     /// <summary>
-    /// Swings the arms like a runner while R2 is held and the WR isn't catching (Y) or carrying the ball.
-    /// The swing follows the run animation's own timing so the arms stay in step with the legs:
-    /// upper arms swing forward/back around the WR's right axis, opposite to each other, with the elbows bent.
-    /// Blends in over armSwingBlendTime (e.g. coming out of a catch attempt). When a catch starts the upper arms
-    /// are left to the catch aim (which moves on from wherever the swing left them) and the elbow bend blends
-    /// back out, so the catching arm straightens again.
+    /// Puts back the arms' normal pose under last frame's run arm swing: shoulder and upper arm positions
+    /// and forearm rotations. (Shoulder and upper arm rotations come back from previous*Rotation.)
+    /// Call at the start of LateUpdate, before anything reads or moves the arms.
+    /// </summary>
+    void RestoreArmsUnderRunSwing()
+    {
+        if (!runArmSwingDrawn)
+        {
+            return;
+        }
+        runArmSwingDrawn = false;
+        Transform leftUpperArm = leftArm.Find("LeftArm");
+        Transform rightUpperArm = rightArm.Find("RightArm");
+        leftArm.localPosition = swingBaseLeftShoulderLocalPosition;
+        rightArm.localPosition = swingBaseRightShoulderLocalPosition;
+        leftUpperArm.localPosition = swingBaseLeftUpperArmLocalPosition;
+        rightUpperArm.localPosition = swingBaseRightUpperArmLocalPosition;
+        leftForeArm.localRotation = swingBaseLeftForeArmLocalRotation;
+        rightForeArm.localRotation = swingBaseRightForeArmLocalRotation;
+    }
+
+    /// <summary>
+    /// Draws a runner's arm swing on top of the arms' normal pose while R2 is held and the WR isn't catching (Y)
+    /// or carrying the ball. Timed from the run animation so the arms stay in step with the legs:
+    ///   - upper arms swing forward (armSwingForwardAmplitude) and back (armSwingBackAmplitude), opposite each
+    ///     other, angling in across the chest at the front
+    ///   - elbows bent by armSwingElbowBend
+    ///   - each shoulder moves forward / back with its arm (shoulderLungeFraction of the upper arm's length)
+    /// The swing fades in / out over armSwingBlendTime. It's drawn after LateUpdate saves the normal pose and
+    /// removed at the start of the next LateUpdate (RestoreArmsUnderRunSwing), so starting a catch blends from the
+    /// swing straight into the normal catch aim, and MoveToPoint / MoveToAlignWith keep their default points.
     /// Works from bone positions (bone -> child joint), so it doesn't depend on each bone's local axes.
     /// </summary>
     void ApplyRunArmSwing()
     {
         if (leftArm == null || rightArm == null || leftForeArm == null || rightForeArm == null || leftHand == null || rightHand == null)
+        {
+            return;
+        }
+        Transform leftUpperArm = leftArm.Find("LeftArm");
+        Transform rightUpperArm = rightArm.Find("RightArm");
+        if (leftUpperArm == null || rightUpperArm == null)
         {
             return;
         }
@@ -2056,7 +2102,6 @@ public class WR : MonoBehaviour
         }
         bool swing = rTriggerPressed && !yButtonPressed && !isCatching && caughtFootball == null &&
                      (hasRunPhase || armSwingWeight > 0f);
-
         float blendRate = Time.deltaTime / Mathf.Max(0.01f, armSwingBlendTime);
         armSwingWeight = Mathf.MoveTowards(armSwingWeight, swing ? 1f : 0f, blendRate);
         if (armSwingWeight <= 0f)
@@ -2064,37 +2109,43 @@ public class WR : MonoBehaviour
             return;
         }
 
+        // Record the normal pose underneath, then draw the swing on top.
+        swingBaseLeftShoulderLocalPosition = leftArm.localPosition;
+        swingBaseRightShoulderLocalPosition = rightArm.localPosition;
+        swingBaseLeftUpperArmLocalPosition = leftUpperArm.localPosition;
+        swingBaseRightUpperArmLocalPosition = rightUpperArm.localPosition;
+        swingBaseLeftForeArmLocalRotation = leftForeArm.localRotation;
+        swingBaseRightForeArmLocalRotation = rightForeArm.localRotation;
+        runArmSwingDrawn = true;
+
         GetWRFrame(out Vector3 wrForward, out Vector3 wrRight);
-        float swingAngle = armSwingAmplitude * Mathf.Sin(2f * Mathf.PI * (armSwingPhase + armSwingPhaseOffset));
-        // Left arm forward when swingAngle > 0, right arm opposite.
-        SwingArm(leftArm.Find("LeftArm"), leftForeArm, leftHand, leftForeArmRestLocalRotation, -wrRight, wrRight, swingAngle, swing);
-        SwingArm(rightArm.Find("RightArm"), rightForeArm, rightHand, rightForeArmRestLocalRotation, wrRight, wrRight, -swingAngle, swing);
+        // -1 (fully back) .. 1 (fully forward); left arm leads, right arm opposite.
+        float swingAmount = Mathf.Sin(2f * Mathf.PI * (armSwingPhase + armSwingPhaseOffset));
+        SwingArm(leftArm, leftUpperArm, leftForeArm, leftHand, -wrRight, wrForward, wrRight, swingAmount);
+        SwingArm(rightArm, rightUpperArm, rightForeArm, rightHand, wrRight, wrForward, wrRight, -swingAmount);
     }
 
-    void SwingArm(Transform upperArm, Transform foreArm, Transform hand, Quaternion foreArmRestLocalRotation, Vector3 outward, Vector3 wrRight, float swingAngle, bool moveUpperArm)
+    void SwingArm(Transform shoulder, Transform upperArm, Transform foreArm, Transform hand, Vector3 outward, Vector3 wrForward, Vector3 wrRight, float swingAmount)
     {
-        if (upperArm == null)
-        {
-            return;
-        }
-        // Hanging straight down, angled out from the body a little.
-        Vector3 hanging = (Vector3.down * Mathf.Cos(armSwingAbduction * Mathf.Deg2Rad) + outward * Mathf.Sin(armSwingAbduction * Mathf.Deg2Rad)).normalized;
+        float upperArmLength = Vector3.Distance(upperArm.position, foreArm.position);
+
+        // Shoulder lunges forward / back with its arm.
+        shoulder.position += wrForward * (swingAmount * shoulderLungeFraction * upperArmLength * armSwingWeight);
+
+        // Upper arm: hanging down and a little out, swung forward (and in across the chest) or back.
+        float swingAngle = swingAmount >= 0f ? swingAmount * armSwingForwardAmplitude : swingAmount * armSwingBackAmplitude;
+        float outAngle = armSwingAbduction - Mathf.Max(0f, swingAmount) * armSwingAcrossBody;
+        Vector3 hanging = (Vector3.down * Mathf.Cos(outAngle * Mathf.Deg2Rad) + outward * Mathf.Sin(outAngle * Mathf.Deg2Rad)).normalized;
         // Positive angles around wrRight swing backwards, so forward = negative.
-        float upperAngle = swingAngle + armSwingForwardBias;
-        Vector3 upperDirection = Quaternion.AngleAxis(-upperAngle, wrRight) * hanging;
+        Vector3 upperDirection = Quaternion.AngleAxis(-(swingAngle + armSwingForwardBias), wrRight) * hanging;
+        AimBoneAt(upperArm, foreArm.position, upperDirection, armSwingWeight);
 
-        if (moveUpperArm)
-        {
-            AimBoneAt(upperArm, foreArm.position, upperDirection, armSwingWeight);
-        }
-
-        // Elbow: bend relative to wherever the upper arm now points, blended from the forearm's rest pose.
-        Vector3 currentUpper = foreArm.position - upperArm.position;
-        Vector3 foreDirection = Quaternion.AngleAxis(-armSwingElbowBend, wrRight) * currentUpper.normalized;
-        foreArm.localRotation = foreArmRestLocalRotation;
+        // Elbow: bend forward from wherever the upper arm now points, blended from the normal forearm pose.
+        Vector3 currentUpper = (foreArm.position - upperArm.position).normalized;
+        Vector3 foreDirection = Quaternion.AngleAxis(-armSwingElbowBend, wrRight) * currentUpper;
+        Quaternion normalLocalRotation = foreArm.localRotation;
         AimBoneAt(foreArm, hand.position, foreDirection, 1f);
-        Quaternion bentLocalRotation = foreArm.localRotation;
-        foreArm.localRotation = Quaternion.Slerp(foreArmRestLocalRotation, bentLocalRotation, armSwingWeight);
+        foreArm.localRotation = Quaternion.Slerp(normalLocalRotation, foreArm.localRotation, armSwingWeight);
     }
 
     // Rotate bone so the line from it to childJoint turns towards direction, by weight (0..1).
@@ -2267,6 +2318,7 @@ public class WR : MonoBehaviour
             {
                 int k = 0;
             }
+            RestoreArmsUnderRunSwing();
             leftArm.rotation = previousLeftShoulderRotation;
             rightArm.rotation = previousRightShoulderRotation;
             leftArm.Find("LeftArm").rotation = previousLeftArmRotation;
@@ -3080,6 +3132,18 @@ public class WR : MonoBehaviour
                     }
                     break;
                 case PlayerState.attemptingCatch:
+                    // Keep running while catching. The stick is aiming the arm, so only the movement assist steers,
+                    // turning at most catchAssistTurnSpeed degrees per second towards where the ball comes down.
+                    if (playerOnGround && rTriggerPressed)
+                    {
+                        Vector3 catchRunDirection = Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
+                        Vector3 assistedCatchRunDirection = ApplyMovementAssist(catchRunDirection);
+                        if (Vector3.Angle(catchRunDirection, assistedCatchRunDirection) > 0.5f)
+                        {
+                            rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, transform, leftHand, Vector2.zero, transform.forward, assistedCatchRunDirection, Vector3.up, Vector3.forward, catchAssistTurnSpeed * Time.deltaTime, "LeftArm", new PlaneViewModel() { });
+                            rootRotation = rootController.AlignTransformAxis();
+                        }
+                    }
                     /*if ((isLeftStickHeldInPlace || onLeftAnalogStickTouched) && playerOnGround) {
                         Vector2 movementInput = playerInput.actions["Catch"].ReadValue<Vector2>();
                         rotationAmount = 60f * movementInput.magnitude;
@@ -3144,11 +3208,12 @@ public class WR : MonoBehaviour
                 List<KeyValuePair<string, bool>> mainCameraRotation = mainCameraController.AlignTransformAxis();
                 MoveToPoint(caughtFootball.transform, caughtFootball.transform.position, leftHand.Find("LeftPalmCatchArea").GetChild(0).position, 1f);
             }
-            ApplyRunArmSwing();
             previousLeftArmRotation = leftArm.Find("LeftArm").rotation;
             previousRightArmRotation = rightArm.Find("RightArm").rotation;
             previousLeftShoulderRotation = leftArm.rotation;
             previousRightShoulderRotation = rightArm.rotation;
+            // Drawn after the normal pose is saved, so it's never part of it.
+            ApplyRunArmSwing();
 
             if (gameObject.name.ToLower().Contains("wrx"))
             {
