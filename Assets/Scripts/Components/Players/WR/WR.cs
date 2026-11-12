@@ -2170,9 +2170,16 @@ public class WR : MonoBehaviour
         return shoulder + direction * straightArmLength;
     }
 
+    /// <summary>
+    /// GetLeftPalmCatchPosition for the catch direction the left stick (and L2) give right now, the same direction
+    /// the catch aim uses (GetLeftArmCatchTarget), e.g. (0,1) -> (0,1,0), (.71,.71) -> (.58,.58,.58) relative to
+    /// the WR. Straight up if the stick is centred.
+    /// </summary>
     public Vector3 GetLeftPalmCatchPosition()
     {
-        return GetLeftPalmCatchPosition(Vector3.up);
+        Vector2 stick = playerInput != null ? playerInput.actions["Catch"].ReadValue<Vector2>() : Vector2.zero;
+        Vector3 catchDirection = GetLeftArmCatchTarget(stick, l2TriggerPressed);
+        return GetLeftPalmCatchPosition(catchDirection.sqrMagnitude > 1e-6f ? catchDirection : Vector3.up);
     }
 
     /// <summary>

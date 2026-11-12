@@ -989,12 +989,12 @@ public class QB : MonoBehaviour
             //timeToCatch = Mathf.Sqrt((forceVectorFinal.x * forceVectorFinal.x) + (forceVectorFinal.z * forceVectorFinal.z)) / (throwSpeed);
             // THROW TARGET (as before the run arm swing): where the WR's left palm will be after 4 seconds at its
             // current velocity, offset by half the distance between the hands, at the palm's height.
-            // The palm is where it will be once the catch aim has the left arm straight up (0,1,0) from the
-            // shoulder's normal position (GetLeftPalmCatchPosition), not wherever the arm is at the moment of the
-            // throw (mid run swing, or still on its way up into the catch).
+            // The palm is where it will be once the catch aim has the left arm straight, pointing the way the WR's
+            // stick (and L2) aim it, from the shoulder's normal position (GetLeftPalmCatchPosition), not wherever the
+            // arm is at the moment of the throw (mid run swing, or still on its way into the catch).
             timeToCatch = 4f;
             WR receiver = wrToUse.GetComponent<WR>();
-            Vector3 receiverPalm = receiver.GetLeftPalmCatchPosition(Vector3.up);
+            Vector3 receiverPalm = receiver.GetLeftPalmCatchPosition();
             throwingTargetPosition = receiverPalm + (wrToUse.GetComponent<Rigidbody>().velocity * timeToCatch);
             throwingTargetPosition = throwingTargetPosition + (-handForCatch.forward * (receiver.GetDistanceBetweenHands() / 2));
             throwingTargetPosition = new Vector3(throwingTargetPosition.x, receiverPalm.y, throwingTargetPosition.z);
