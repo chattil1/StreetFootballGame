@@ -2351,14 +2351,14 @@ public class WR : MonoBehaviour
 
     /// <summary>
     /// Left stick -> direction the left arm (-right) should point, in front of the WR.
-    /// Built from (lateral, up, forward) parts, then put in world space with
-    ///   lateral = world X (stick right = +X, stick left = -X, as on screen, whichever way the WR faces)
-    ///   forward = world +Z if the WR faces +Z, world -Z if it faces -Z
+    /// Built from (lateral, up, forward) parts relative to the WR (forward = WR forward on the ground), with the
+    /// lateral part mirrored when the WR faces into the -Z half (forward.z &lt; 0) so stick right always leans
+    /// towards world +X (as on screen):
     ///   Without L2: (x, y, min(|x|,|y|))                 stick up = straight up, stick down = straight down
     ///   With L2:    (x, sign(y) * min(|x|,|y|), |y|)     stick up / down = forward (L2 tips the aim forward)
     ///   Stick left / right = straight out to that side either way.
-    /// e.g. facing +Z: (.71,.71) -> (.58,.58,.58);  facing -Z: (.71,.71) -> (.58,.58,-.58),
-    ///      (-.71,-.71) -> (-.58,-.58,-.58),  (.71,-.71) -> (.58,-.58,-.58)
+    /// e.g. facing +Z: (.71,.71) -> (.58,.58,.58);  facing -Z: (.71,.71) -> (.58,.58,-.58), (1,0) -> (1,0,0);
+    ///      facing (.98,0,-.2): (-1,0) -> (-.2,0,-.98) (leans to -X; without the mirror it would lean to +X)
     /// </summary>
     Vector3 GetLeftArmCatchTarget(Vector2 stick, bool l2Held)
     {
@@ -2371,10 +2371,12 @@ public class WR : MonoBehaviour
             ? new Vector3(stick.x, stick.y > 0f ? smaller : stick.y < 0f ? -smaller : 0f, Mathf.Abs(stick.y))
             : new Vector3(stick.x, stick.y, smaller);
 
-        // Stick x always goes along world X (stick right = +X, as on screen); the forward part goes along world +Z
-        // or -Z, whichever way the WR faces.
-        float facingSign = Vector3.Dot(transform.forward, Vector3.forward) >= 0f ? 1f : -1f;
-        Vector3 target = Vector3.right * local.x + Vector3.up * local.y + Vector3.forward * (facingSign * local.z);
+        // Turned with the WR's facing. When the WR faces into the -Z half (forward's angle on the ground between
+        // 180 and 360 degrees, i.e. forward.z < 0), its own -right points towards +X instead of -X, so the
+        // side-to-side part is mirrored to keep stick right leaning towards +X (as on screen).
+        GetWRFrame(out Vector3 wrForward, out Vector3 wrRight);
+        Vector3 lateral = wrForward.z < 0f ? -wrRight : wrRight;
+        Vector3 target = lateral * local.x + Vector3.up * local.y + wrForward * local.z;
         return target.sqrMagnitude > 1e-6f ? target.normalized : Vector3.zero;
     }
 
