@@ -403,9 +403,8 @@ namespace FootballGame.TransformOperations.Models {
 
         /// <summary>
         /// When the arm can't reach the target inside its horizontal limits, turn the root (Vector3.up only).
-        /// Off: catch targets are now relative to the WR and always in front of it, so they never need it,
-        /// and turning the root would also turn a WR-relative target (the WR would keep spinning).
-        /// Only turn it on for world-space targets.
+        /// Only for world-space targets (turning the root would also turn a WR-relative one, and it would keep
+        /// spinning). The WR sets this each frame: on when catching without R2, off with R2 (the WR turns itself).
         /// </summary>
         public static bool AllowRootTurnAssist = false;
 
