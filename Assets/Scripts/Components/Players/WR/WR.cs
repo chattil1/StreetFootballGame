@@ -2145,6 +2145,37 @@ public class WR : MonoBehaviour
     }
 
     /// <summary>
+    /// Where the left palm will be once the catch aim has the left arm fully straight and pointing in
+    /// catchDirection (default straight up, (0,1,0)): the shoulder's normal position (no run swing) plus
+    /// catchDirection * the straightened arm's length. While catching, the arm's top joint is moved onto the
+    /// shoulder (MoveToPoint(LeftArm -> leftArm)), so the length is measured from there:
+    /// upper arm + forearm + hand to palm (LeftPalmCatchArea).
+    /// Used by the QB so the throw doesn't depend on how far the arm has got by the time it's thrown.
+    /// </summary>
+    public Vector3 GetLeftPalmCatchPosition(Vector3 catchDirection)
+    {
+        Transform upperArm = leftArm != null ? leftArm.Find("LeftArm") : null;
+        Transform palm = leftHand != null ? leftHand.Find("LeftPalmCatchArea") : null;
+        if (upperArm == null || leftForeArm == null || leftHand == null || palm == null)
+        {
+            return GetLeftPalmPositionWithoutRunSwing();
+        }
+        Vector3 shoulderLocal = runArmSwingDrawn ? swingBaseLeftShoulderLocalPosition : leftArm.localPosition;
+        Vector3 shoulder = leftArm.parent != null ? leftArm.parent.TransformPoint(shoulderLocal) : shoulderLocal;
+        float straightArmLength =
+            Vector3.Distance(upperArm.position, leftForeArm.position) +
+            Vector3.Distance(leftForeArm.position, leftHand.position) +
+            Vector3.Distance(leftHand.position, palm.position);
+        Vector3 direction = catchDirection.sqrMagnitude > 1e-6f ? catchDirection.normalized : Vector3.up;
+        return shoulder + direction * straightArmLength;
+    }
+
+    public Vector3 GetLeftPalmCatchPosition()
+    {
+        return GetLeftPalmCatchPosition(Vector3.up);
+    }
+
+    /// <summary>
     /// Where the left palm would be without the run arm swing drawn on it (the arm's normal pose).
     /// Used by the QB to aim throws the way it did before the arm swing existed.
     /// </summary>
