@@ -2350,18 +2350,15 @@ public class WR : MonoBehaviour
     }
 
     /// <summary>
-    /// Left stick -> direction the left arm (-right) should point, always in the 180 degrees in front of the WR.
-    /// Built in the WR's own frame: x = WR right, y = up, z = WR forward projected onto the Vector3.up plane,
-    /// then returned in world space.
+    /// Left stick -> direction the left arm (-right) should point, in front of the WR.
+    /// Built from (lateral, up, forward) parts, then put in world space with
+    ///   lateral = world X (stick right = +X, stick left = -X, as on screen, whichever way the WR faces)
+    ///   forward = world +Z if the WR faces +Z, world -Z if it faces -Z
     ///   Without L2: (x, y, min(|x|,|y|))                 stick up = straight up, stick down = straight down
-    ///   With L2:    (x, sign(y) * min(|x|,|y|), |y|)     stick up / down = WR forward (L2 tips the aim forward)
+    ///   With L2:    (x, sign(y) * min(|x|,|y|), |y|)     stick up / down = forward (L2 tips the aim forward)
     ///   Stick left / right = straight out to that side either way.
-    /// e.g. WR facing Vector3.forward:
-    ///   (0,1)        -> (0,1,0)               L2: (0,0,1)
-    ///   (0,-1)       -> (0,-1,0)              L2: (0,0,1)
-    ///   (.5,.87)     -> (.45,.77,.45)         L2: (.45,.45,.77)
-    ///   (.71,-.71)   -> (.58,-.58,.58)        L2: (.58,-.58,.58)
-    ///   (1,0)        -> (1,0,0)               L2: (1,0,0)
+    /// e.g. facing +Z: (.71,.71) -> (.58,.58,.58);  facing -Z: (.71,.71) -> (.58,.58,-.58),
+    ///      (-.71,-.71) -> (-.58,-.58,-.58),  (.71,-.71) -> (.58,-.58,-.58)
     /// </summary>
     Vector3 GetLeftArmCatchTarget(Vector2 stick, bool l2Held)
     {
@@ -2374,8 +2371,10 @@ public class WR : MonoBehaviour
             ? new Vector3(stick.x, stick.y > 0f ? smaller : stick.y < 0f ? -smaller : 0f, Mathf.Abs(stick.y))
             : new Vector3(stick.x, stick.y, smaller);
 
-        GetWRFrame(out Vector3 wrForward, out Vector3 wrRight);
-        Vector3 target = wrRight * local.x + Vector3.up * local.y + wrForward * local.z;
+        // Stick x always goes along world X (stick right = +X, as on screen); the forward part goes along world +Z
+        // or -Z, whichever way the WR faces.
+        float facingSign = Vector3.Dot(transform.forward, Vector3.forward) >= 0f ? 1f : -1f;
+        Vector3 target = Vector3.right * local.x + Vector3.up * local.y + Vector3.forward * (facingSign * local.z);
         return target.sqrMagnitude > 1e-6f ? target.normalized : Vector3.zero;
     }
 
