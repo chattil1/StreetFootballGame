@@ -70,6 +70,15 @@ public class WR : MonoBehaviour
     private Quaternion swingBaseLeftForeArmLocalRotation;
     private Quaternion swingBaseRightForeArmLocalRotation;
 
+    // Normal (pre-catch) pose of the shoulders, upper arms and forearms, captured on the first LateUpdate.
+    // The catch code moves / rotates the shoulders (MoveToAlignWith pulls the right shoulder over to the left,
+    // AimAtTargetInput turns it) and nothing put them back; ReturnArmsToNormalPose does that after a catch attempt.
+    private bool armNormalPoseCaptured = false;
+    private Vector3[] armNormalLocalPositions;
+    private Quaternion[] armNormalLocalRotations;
+    [Tooltip("Seconds for the shoulders and arms to settle back into their normal pose after a catch attempt.")]
+    public float armReturnToNormalTime = 0.25f;
+
     [Header("Catching")]
     [Tooltip("Old behaviour: pressing catch on the ground leaps the WR towards the stick. Off = keep running while catching.")]
     public bool leapWhenCatching = false;
@@ -1794,6 +1803,10 @@ public class WR : MonoBehaviour
         //Vector3 editedForward = rb.gameObject.transform.forward;
         Vector2 movementInput = playerInput.actions["Catch"].ReadValue<Vector2>();
         //bool canRun = !timeOver && rTriggerPressed && wrAlignedForRun && !isCatching && playerOnGround;
+        if (yButtonPressed)
+        {
+            rb.angularVelocity = Vector3.zero; // no turning while Y is held
+        }
         // Catching (Y) no longer stops the run.
         bool canRun = !timeOver && wrAlignedForRun && playerOnGround && movementInput.magnitude > 0;
         bool canMoveAround = !timeOver && movementInput.magnitude > 0 && playerOnGround;
@@ -2087,6 +2100,88 @@ public class WR : MonoBehaviour
         return false;
     }
 
+    Transform[] GetArmPoseBones()
+    {
+        return new Transform[] { leftArm, rightArm, leftArm.Find("LeftArm"), rightArm.Find("RightArm"), leftForeArm, rightForeArm };
+    }
+
+    /// <summary>
+    /// Captures the shoulders' / arms' normal pose once, then, whenever the WR isn't catching (Y) or holding the
+    /// ball, eases their local positions and rotations back to it (over armReturnToNormalTime). Undoes what the
+    /// catch code did to them, e.g. the right shoulder pulled over to the left shoulder.
+    /// </summary>
+    void ReturnArmsToNormalPose()
+    {
+        Transform[] bones = GetArmPoseBones();
+        foreach (Transform bone in bones)
+        {
+            if (bone == null)
+            {
+                return;
+            }
+        }
+        if (!armNormalPoseCaptured)
+        {
+            armNormalLocalPositions = new Vector3[bones.Length];
+            armNormalLocalRotations = new Quaternion[bones.Length];
+            for (int i = 0; i < bones.Length; i++)
+            {
+                armNormalLocalPositions[i] = bones[i].localPosition;
+                armNormalLocalRotations[i] = bones[i].localRotation;
+            }
+            armNormalPoseCaptured = true;
+            return;
+        }
+        if (isCatching || yButtonPressed || caughtFootball != null)
+        {
+            return;
+        }
+        float blend = Mathf.Clamp01(Time.deltaTime / Mathf.Max(0.01f, armReturnToNormalTime));
+        for (int i = 0; i < bones.Length; i++)
+        {
+            bones[i].localPosition = Vector3.Lerp(bones[i].localPosition, armNormalLocalPositions[i], blend);
+            bones[i].localRotation = Quaternion.Slerp(bones[i].localRotation, armNormalLocalRotations[i], blend);
+        }
+    }
+
+    /// <summary>
+    /// Where the left palm would be without the run arm swing drawn on it (the arm's normal pose).
+    /// Used by the QB to aim throws the way it did before the arm swing existed.
+    /// </summary>
+    public Vector3 GetLeftPalmPositionWithoutRunSwing()
+    {
+        Transform palm = leftHand != null ? leftHand.Find("LeftPalmCatchArea") : null;
+        Transform upperArm = leftArm != null ? leftArm.Find("LeftArm") : null;
+        if (palm == null)
+        {
+            return leftHand != null ? leftHand.position : transform.position;
+        }
+        if (!runArmSwingDrawn || upperArm == null || leftForeArm == null)
+        {
+            return palm.position;
+        }
+        // Put the normal pose back for a moment, read the palm, then put the swing back.
+        Vector3 shoulderPosition = leftArm.localPosition;
+        Quaternion shoulderRotation = leftArm.rotation;
+        Vector3 upperArmPosition = upperArm.localPosition;
+        Quaternion upperArmRotation = upperArm.rotation;
+        Quaternion foreArmRotation = leftForeArm.localRotation;
+
+        leftArm.localPosition = swingBaseLeftShoulderLocalPosition;
+        leftArm.rotation = previousLeftShoulderRotation;
+        upperArm.localPosition = swingBaseLeftUpperArmLocalPosition;
+        upperArm.rotation = previousLeftArmRotation;
+        leftForeArm.localRotation = swingBaseLeftForeArmLocalRotation;
+        Vector3 palmWithoutSwing = palm.position;
+
+        leftArm.localPosition = shoulderPosition;
+        leftArm.rotation = shoulderRotation;
+        upperArm.localPosition = upperArmPosition;
+        upperArm.rotation = upperArmRotation;
+        leftForeArm.localRotation = foreArmRotation;
+        return palmWithoutSwing;
+    }
+
     /// <summary>
     /// Puts back the arms' normal pose under last frame's run arm swing: shoulder and upper arm positions
     /// and forearm rotations. (Shoulder and upper arm rotations come back from previous*Rotation.)
@@ -2261,7 +2356,7 @@ public class WR : MonoBehaviour
     /// <summary>
     /// Twist reference for the left arm: the direction arm.forward turns towards (around -arm.right) so the hand
     /// faces the right way for a catch. Built from the arm target in the WR's frame (x right, y up, z forward):
-    ///   y &lt; 0:       keepTwist (the existing twist for low targets)
+    ///   y &lt; 0:       up, made perpendicular to the target (easing to WR forward near straight down)
     ///   |z| &gt;= .71:  up, made perpendicular to the target (hand up when reaching out in front)
     ///   otherwise:   (-sign(x) * m, m, M) with m = min(|x|,|y|), M = max(|x|,|y|), made perpendicular
     ///                e.g. (1,0,0) -> (0,0,1), (.87,.5,.5) -> (-.5,.5,.87), (-.87,.5,.5) -> (.5,.5,.87)
@@ -2277,12 +2372,19 @@ public class WR : MonoBehaviour
         float x = Vector3.Dot(target, wrRight);
         float y = Vector3.Dot(target, Vector3.up);
         float z = Vector3.Dot(target, wrForward);
+        Vector3 reference;
         if (y < 0f)
         {
-            return keepTwist;
+            // Low targets: hand up too. Straight up, made perpendicular to the target; as the target gets close to
+            // straight down (where "up" has no perpendicular part) it eases to the WR's forward.
+            Vector3 upPart = Vector3.ProjectOnPlane(Vector3.up, target);
+            Vector3 forwardPart = Vector3.ProjectOnPlane(wrForward, target);
+            float upStrength = Mathf.Clamp01(upPart.magnitude / 0.5f);
+            reference = upPart.sqrMagnitude > 1e-6f
+                ? Vector3.Slerp(forwardPart.normalized, upPart.normalized, upStrength)
+                : forwardPart;
         }
-        Vector3 reference;
-        if (Mathf.Abs(z) >= 0.71f)
+        else if (Mathf.Abs(z) >= 0.71f)
         {
             reference = Vector3.up;
         }
@@ -2379,6 +2481,7 @@ public class WR : MonoBehaviour
             rightArm.rotation = previousRightShoulderRotation;
             leftArm.Find("LeftArm").rotation = previousLeftArmRotation;
             rightArm.Find("RightArm").rotation = previousRightArmRotation;
+            ReturnArmsToNormalPose();
 
             bool rotateVertical = Mathf.Abs((Time.deltaTime * leftRotateValue.Item2)) > 0 ? true : false;
             angleBetween = (leftArm.right.x * -1f) > deltaPos.normalized.x ? Vector3.Angle((leftArm.right * -1), deltaPos.normalized) : -Vector3.Angle((leftArm.right * -1), deltaPos.normalized);
@@ -3178,7 +3281,12 @@ public class WR : MonoBehaviour
             switch (wrState)
             {
                 case PlayerState.catchAndRun:
-                    // After the ball hits the hand colliders, turn back to the route direction (flattened onto the ground).
+                    // After the ball hits the hand colliders, turn back to the route direction (flattened onto the ground),
+                    // once Y is let go (no turning while Y is held).
+                    if (yButtonPressed)
+                    {
+                        break;
+                    }
                     Vector3 postCatchRouteDirection = GetPostCatchRouteDirection(playerInput.actions["Catch"].ReadValue<Vector2>());
                     rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, transform, leftHand, Vector2.zero, transform.forward, postCatchRouteDirection, Vector3.up, Vector3.forward, 30f, "LeftArm", new PlaneViewModel() { });
                     rootRotation = rootController.AlignTransformAxis();
@@ -3211,7 +3319,8 @@ public class WR : MonoBehaviour
                 case PlayerState.running:
                 case PlayerState.aimingForwardDirection:
                     //ROTATE THE PLAYER
-                    if ((isLeftStickHeldInPlace || onLeftAnalogStickTouched) && playerOnGround)
+                    // No turning while Y is held (with or without R2): the WR keeps running the way it faces.
+                    if ((isLeftStickHeldInPlace || onLeftAnalogStickTouched) && playerOnGround && !yButtonPressed)
                     {
                         //ALIGN ROOT TO ANALOG INPUT
                         Vector2 movementInput = playerInput.actions["Catch"].ReadValue<Vector2>();
