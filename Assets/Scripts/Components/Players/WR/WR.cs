@@ -109,6 +109,8 @@ public class WR : MonoBehaviour
     [Tooltip("Smallest ground (horizontal) part of the arm's target that turns the body; straight up / down doesn't.")]
     public float catchBodyTurnMinHorizontal = 0.1f;
     private Vector3 leftArmCatchStickTarget = Vector3.zero;
+    [Tooltip("While catching (Y), extra distance (on top of the ball's and palm's size) at which a ball passing a palm is caught. Backs up the physics contact, which a fast ball can skip past.")]
+    public float catchSweepMargin = 0.1f;
     [Tooltip("How far ahead to predict the ball, in seconds.")]
     public float ballPredictionTime = 6f;
     private readonly List<Vector3> predictedBallPath = new List<Vector3>();
@@ -306,6 +308,13 @@ public class WR : MonoBehaviour
     }*/
     void Awake()
     {
+        // Catch contacts: the ball (ContinuousDynamic, set by the QB) only sweeps against this WR's colliders
+        // (including the palm catch areas, which ride on this Rigidbody) if this Rigidbody uses continuous detection.
+        Rigidbody wrBody = GetComponent<Rigidbody>();
+        if (wrBody != null && wrBody.collisionDetectionMode == CollisionDetectionMode.Discrete)
+        {
+            wrBody.collisionDetectionMode = CollisionDetectionMode.Continuous;
+        }
         // Forearms for the run arm swing. If they weren't set in the Inspector, find the UMA bones by name under the shoulders.
         if (leftForeArm == null && leftArm != null)
         {
@@ -1797,6 +1806,7 @@ public class WR : MonoBehaviour
     }
     private void FixedUpdate()
     {
+        CatchSweep();
         GameObject football = QB.GetComponent<QB>().GetFootball();
         Vector3 twistDir = new Vector3(football.transform.position.x, 0f, football.transform.position.z);
         bool timeOver = QB.GetComponent<QB>().GetIsThrown() && ((Time.time - QB.GetComponent<QB>().GetTimeThrown()) >= QB.GetComponent<QB>().GetTimeToCatch()) ? true : false;
@@ -1872,6 +1882,70 @@ public class WR : MonoBehaviour
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Backup for the physics catch contact. The palm catch areas are thin boxes (0.05 deep), so a fast ball moving
+    /// across the hands (WR running sideways or towards the QB) can be on one side of a palm one physics step and past
+    /// it the next, and OnCollisionEnter never fires. While catching (Y), check where the ball goes this step
+    /// (relative to the WR, which is moving too); if that passes through either palm, put the ball touching the palm
+    /// so the physics step makes the contact and TestCollision.OnCollisionEnter runs the catch as usual.
+    /// </summary>
+    void CatchSweep()
+    {
+        if (!isCatching)
+        {
+            return;
+        }
+        Rigidbody ball = GetBallInFlight();
+        if (ball == null)
+        {
+            return;
+        }
+        Collider ballCollider = ball.GetComponentInChildren<Collider>();
+        Vector3 ballCenterOffset = ballCollider != null ? ballCollider.bounds.center - ball.position : Vector3.zero;
+        float ballRadius = 0.1f;
+        if (ballCollider != null)
+        {
+            Vector3 extents = ballCollider.bounds.extents;
+            ballRadius = Mathf.Min(extents.x, Mathf.Min(extents.y, extents.z));
+        }
+        float step = Time.fixedDeltaTime;
+        Rigidbody wrBody = GetComponent<Rigidbody>();
+        Vector3 wrVelocity = wrBody != null ? wrBody.velocity : Vector3.zero;
+        Vector3 ballVelocity = ball.velocity + (ball.useGravity ? Physics.gravity * step : Vector3.zero);
+        Vector3 from = ball.position + ballCenterOffset;
+        Vector3 relativeMove = (ballVelocity - wrVelocity) * step;
+
+        Transform[] palms =
+        {
+            leftHand != null ? leftHand.Find("LeftPalmCatchArea") : null,
+            rightHand != null ? rightHand.Find("RightPalmCatchArea") : null,
+        };
+        foreach (Transform palm in palms)
+        {
+            if (palm == null)
+            {
+                continue;
+            }
+            Collider palmCollider = palm.GetComponent<Collider>();
+            Vector3 palmCenter = palmCollider != null ? palmCollider.bounds.center : palm.position;
+            float palmRadius = palmCollider != null ? palmCollider.bounds.extents.magnitude : 0.1f;
+            // Closest point of the ball's path this step to the palm (palm held still, ball moving relative to it).
+            float along = relativeMove.sqrMagnitude > 1e-10f
+                ? Mathf.Clamp01(Vector3.Dot(palmCenter - from, relativeMove) / relativeMove.sqrMagnitude)
+                : 0f;
+            Vector3 closest = from + relativeMove * along;
+            Vector3 palmToBall = closest - palmCenter;
+            if (palmToBall.magnitude > ballRadius + palmRadius + catchSweepMargin)
+            {
+                continue;
+            }
+            // Put the ball overlapping the palm (just off its centre, on the side it came from).
+            Vector3 side = palmToBall.sqrMagnitude > 1e-8f ? palmToBall.normalized : -relativeMove.normalized;
+            ball.position = palmCenter + side * (ballRadius * 0.5f) - ballCenterOffset;
+            return;
+        }
     }
 
     /// <summary>The ball's rigidbody while it's in flight (thrown, not caught), otherwise null.</summary>

@@ -263,13 +263,13 @@ public class QB : MonoBehaviour
             parentFootballPosition.transform.localEulerAngles = football.transform.localEulerAngles;
             football.transform.parent = parentFootballPosition.transform;
             //football.AddComponent<Rigidbody>();
-            //parentFootballPosition.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.Continuous;
+            //parentFootballPosition.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic; // sweep against moving (Rigidbody) colliders too, e.g. the WR's palms
             //parentFootballPosition.GetComponent<Rigidbody>().angularDrag = 0.75f;
 
 
 
 
-            parentFootballPosition.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.Continuous;
+            parentFootballPosition.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic; // sweep against moving (Rigidbody) colliders too, e.g. the WR's palms
             //parentFootballPosition.GetComponent<Rigidbody>().angularDrag = 0.75f;
 
 
@@ -856,7 +856,7 @@ public class QB : MonoBehaviour
         //Original code needs to be kept
         f.AddComponent<Rigidbody>();
         Rigidbody r = f.GetComponent<Rigidbody>();
-        f.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.Continuous;
+        f.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
         footballProjectileRotationTime = DrawTrajectory.instance.UpdateTrajectory(forceVTest2, f.GetComponent<Rigidbody>(), f.transform.position);
         //DrawTrajectory.instance.UpdateTrajectory(forceVTest2, null, f.transform.position);
 
@@ -988,7 +988,7 @@ public class QB : MonoBehaviour
             float fvZCamera = forceVectorFinalCamera.z > 0 ? forceVectorFinalCamera.z : 1;
             //timeToCatch = Mathf.Sqrt((forceVectorFinal.x * forceVectorFinal.x) + (forceVectorFinal.z * forceVectorFinal.z)) / (throwSpeed);
             // THROW TARGET (as before the run arm swing): where the WR's left palm will be after 4 seconds at its
-            // current velocity, offset by half the distance between the hands, at the palm's height.
+            // current velocity, at the palm's height.
             // The palm is where it will be once the catch aim has the left arm straight, pointing the way the WR's
             // stick (and L2) aim it, from the shoulder's normal position (GetLeftPalmCatchPosition), not wherever the
             // arm is at the moment of the throw (mid run swing, or still on its way into the catch).
@@ -996,7 +996,9 @@ public class QB : MonoBehaviour
             WR receiver = wrToUse.GetComponent<WR>();
             Vector3 receiverPalm = receiver.GetLeftPalmCatchPosition();
             throwingTargetPosition = receiverPalm + (wrToUse.GetComponent<Rigidbody>().velocity * timeToCatch);
-            throwingTargetPosition = throwingTargetPosition + (-handForCatch.forward * (receiver.GetDistanceBetweenHands() / 2));
+            // Aim at the predicted palm itself. (The old half-hand-spacing offset along handForCatch.forward used the
+            // hand's direction and spacing at release, which mid run swing point anywhere and pushed the aim off
+            // by up to half an arm's length.)
             throwingTargetPosition = new Vector3(throwingTargetPosition.x, receiverPalm.y, throwingTargetPosition.z);
             wrToUse.GetComponent<WR>().SetTargetPosition(throwingTargetPosition);
             if (throwingTargetPosition.magnitude > 0) {
@@ -1079,7 +1081,7 @@ public class QB : MonoBehaviour
             wrToUse.GetComponent<WR>().SetThrowPoint(parentFootballPosition.transform.position);
             wrToUse.GetComponent<WR>().SetThrowDirection(throwingTargetPosition - parentFootballPosition.transform.position);
             //football.AddComponent<Rigidbody>();
-            //parentFootballPosition.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.Continuous;
+            //parentFootballPosition.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic; // sweep against moving (Rigidbody) colliders too, e.g. the WR's palms
             //parentFootballPosition.GetComponent<Rigidbody>().angularDrag = 0.75f;
             Vector3 targetCamPosition;
             Vector3 diff;
@@ -1126,7 +1128,7 @@ public class QB : MonoBehaviour
 
 
 
-            parentFootballPosition.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.Continuous;
+            parentFootballPosition.GetComponent<Rigidbody>().collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic; // sweep against moving (Rigidbody) colliders too, e.g. the WR's palms
             //parentFootballPosition.GetComponent<Rigidbody>().angularDrag = 0.75f;
 
 
