@@ -102,8 +102,13 @@ public class WR : MonoBehaviour
     public float moveAssistMaxAngle = 100f;
     [Tooltip("While catching (Y), the WR's top speed for getting to the ball in time, as a multiple of its run speed.")]
     public float catchRunMaxSpeedMultiplier = 1.5f;
-    [Tooltip("While catching (Y), how far (degrees) the WR may drift sideways from where it faces to get to the ball.")]
-    public float catchRunMaxSideAngle = 60f;
+    [Tooltip("While catching (Y), how far (degrees) the WR's movement may be from where it faces to get to the ball (180 = any direction, since the body turns to suit the arm).")]
+    public float catchRunMaxSideAngle = 180f;
+    [Tooltip("While catching (Y), degrees per second the WR's body turns to face clockwise-perpendicular to the arm's target.")]
+    public float catchBodyTurnSpeed = 180f;
+    [Tooltip("Smallest ground (horizontal) part of the arm's target that turns the body; straight up / down doesn't.")]
+    public float catchBodyTurnMinHorizontal = 0.1f;
+    private Vector3 leftArmCatchStickTarget = Vector3.zero;
     [Tooltip("How far ahead to predict the ball, in seconds.")]
     public float ballPredictionTime = 6f;
     private readonly List<Vector3> predictedBallPath = new List<Vector3>();
@@ -2145,8 +2150,26 @@ public class WR : MonoBehaviour
     }
 
     /// <summary>
+    /// The way the WR's body faces while catching: clockwise-perpendicular (on the ground) to the arm's target,
+    /// the same way forward is to -right. e.g. target (-1,0,0) -> (0,0,1), (1,0,0) -> (0,0,-1), (0,0,1) -> (1,0,0).
+    /// False when the target is (nearly) straight up or down, so the body keeps its facing.
+    /// </summary>
+    bool TryGetCatchBodyForward(Vector3 armTarget, out Vector3 bodyForward)
+    {
+        bodyForward = Vector3.zero;
+        Vector3 ground = Vector3.ProjectOnPlane(armTarget, Vector3.up);
+        if (armTarget.sqrMagnitude < 1e-6f || ground.magnitude < catchBodyTurnMinHorizontal * armTarget.magnitude)
+        {
+            return false;
+        }
+        bodyForward = Quaternion.AngleAxis(90f, Vector3.up) * ground.normalized;
+        return true;
+    }
+
+    /// <summary>
     /// Where the left palm will be once the catch aim has the left arm fully straight and pointing in
-    /// catchDirection (default straight up, (0,1,0)): the shoulder's normal position (no run swing) plus
+    /// catchDirection (default straight up, (0,1,0)), after the body has turned for the catch: the shoulder's normal
+    /// position (no run swing, turned with the body) plus
     /// catchDirection * the straightened arm's length. While catching, the arm's top joint is moved onto the
     /// shoulder (MoveToPoint(LeftArm -> leftArm)), so the length is measured from there:
     /// upper arm + forearm + hand to palm (LeftPalmCatchArea).
@@ -2162,6 +2185,17 @@ public class WR : MonoBehaviour
         }
         Vector3 shoulderLocal = runArmSwingDrawn ? swingBaseLeftShoulderLocalPosition : leftArm.localPosition;
         Vector3 shoulder = leftArm.parent != null ? leftArm.parent.TransformPoint(shoulderLocal) : shoulderLocal;
+        // The body will turn to face clockwise-perpendicular to this direction while catching, which swings the
+        // shoulder around the WR: use where the shoulder will be after that turn.
+        if (TryGetCatchBodyForward(catchDirection, out Vector3 catchBodyForward))
+        {
+            Vector3 currentForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+            if (currentForward.sqrMagnitude > 1e-6f)
+            {
+                Quaternion bodyTurn = Quaternion.AngleAxis(Vector3.SignedAngle(currentForward.normalized, catchBodyForward, Vector3.up), Vector3.up);
+                shoulder = transform.position + bodyTurn * (shoulder - transform.position);
+            }
+        }
         float straightArmLength =
             Vector3.Distance(upperArm.position, leftForeArm.position) +
             Vector3.Distance(leftForeArm.position, leftHand.position) +
@@ -2351,14 +2385,12 @@ public class WR : MonoBehaviour
 
     /// <summary>
     /// Left stick -> direction the left arm (-right) should point, in front of the WR.
-    /// Built from (lateral, up, forward) parts relative to the WR (forward = WR forward on the ground), with the
-    /// lateral part mirrored when the WR faces into the -Z half (forward.z &lt; 0) so stick right always leans
-    /// towards world +X (as on screen):
+    /// Global (world space, not relative to the WR's facing): x = world X, y = up, forward part = world +Z.
+    /// While catching, the WR's body turns to suit it (see GetCatchBodyForward).
     ///   Without L2: (x, y, min(|x|,|y|))                 stick up = straight up, stick down = straight down
     ///   With L2:    (x, sign(y) * min(|x|,|y|), |y|)     stick up / down = forward (L2 tips the aim forward)
     ///   Stick left / right = straight out to that side either way.
-    /// e.g. facing +Z: (.71,.71) -> (.58,.58,.58);  facing -Z: (.71,.71) -> (.58,.58,-.58), (1,0) -> (1,0,0);
-    ///      facing (.98,0,-.2): (-1,0) -> (-.2,0,-.98) (leans to -X; without the mirror it would lean to +X)
+    /// e.g. (.71,.71) -> (.58,.58,.58), (1,0) -> (1,0,0), (0,-1) -> (0,-1,0), (0,1) with L2 -> (0,0,1)
     /// </summary>
     Vector3 GetLeftArmCatchTarget(Vector2 stick, bool l2Held)
     {
@@ -2371,12 +2403,9 @@ public class WR : MonoBehaviour
             ? new Vector3(stick.x, stick.y > 0f ? smaller : stick.y < 0f ? -smaller : 0f, Mathf.Abs(stick.y))
             : new Vector3(stick.x, stick.y, smaller);
 
-        // Turned with the WR's facing. When the WR faces into the -Z half (forward's angle on the ground between
-        // 180 and 360 degrees, i.e. forward.z < 0), its own -right points towards +X instead of -X, so the
-        // side-to-side part is mirrored to keep stick right leaning towards +X (as on screen).
-        GetWRFrame(out Vector3 wrForward, out Vector3 wrRight);
-        Vector3 lateral = wrForward.z < 0f ? -wrRight : wrRight;
-        Vector3 target = lateral * local.x + Vector3.up * local.y + wrForward * local.z;
+        // Global: x along world X, y up, the forward part along world +Z. Doesn't depend on the WR's facing; the WR
+        // turns to suit the target instead (GetCatchBodyForward).
+        Vector3 target = Vector3.right * local.x + Vector3.up * local.y + Vector3.forward * local.z;
         return target.sqrMagnitude > 1e-6f ? target.normalized : Vector3.zero;
     }
 
@@ -2720,6 +2749,7 @@ public class WR : MonoBehaviour
                     }
                     // Stick -> left arm target, in front of the WR (see GetLeftArmCatchTarget). Overrides the two branches above.
                     tForLeftArm = GetLeftArmCatchTarget(movementInput, l2TriggerPressed && yButtonPressed);
+                    leftArmCatchStickTarget = tForLeftArm;
                     tForLeftArm = ApplyAimAssist(tForLeftArm);
                     List<KeyValuePair<Axis, float>> instructions = new List<KeyValuePair<Axis, float>>();
 
@@ -3335,8 +3365,16 @@ public class WR : MonoBehaviour
                     }
                     break;
                 case PlayerState.attemptingCatch:
-                    // No turning while catching (Y): the WR keeps facing the same way. Its run speed / direction
-                    // while catching comes from TryGetCatchRunVelocity in FixedUpdate.
+                    // While catching, the body turns (at catchBodyTurnSpeed) to face clockwise-perpendicular to the
+                    // arm's target on the ground, the way forward is to -right, while the arm aims at the target
+                    // within its limits. The stick doesn't turn the body. Run speed / direction while catching comes
+                    // from TryGetCatchRunVelocity in FixedUpdate.
+                    if (isCatching && TryGetCatchBodyForward(leftArmCatchStickTarget, out Vector3 catchBodyForward) &&
+                        Vector3.Angle(Vector3.ProjectOnPlane(transform.forward, Vector3.up), catchBodyForward) > 0.5f)
+                    {
+                        rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, transform, leftHand, Vector2.zero, transform.forward, catchBodyForward, Vector3.up, Vector3.forward, catchBodyTurnSpeed * Time.deltaTime, "LeftArm", new PlaneViewModel() { });
+                        rootRotation = rootController.AlignTransformAxis();
+                    }
                     /*if ((isLeftStickHeldInPlace || onLeftAnalogStickTouched) && playerOnGround) {
                         Vector2 movementInput = playerInput.actions["Catch"].ReadValue<Vector2>();
                         rotationAmount = 60f * movementInput.magnitude;
