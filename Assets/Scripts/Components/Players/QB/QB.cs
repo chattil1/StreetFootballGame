@@ -18,17 +18,19 @@ public class QB : MonoBehaviour
     [Header("In-Air Camera (Madden-style)")]
     [Tooltip("Use the Madden-style camera while the ball is in the air. Off = the old fixed (0, 5, -50) offset.")]
     public bool useBroadcastInAirCamera = true;
-    [Tooltip("Degrees the camera looks down at the field (Madden is shallow, so the far field / horizon shows at the top). It always faces downfield (the way the QB faced at release).")]
-    public float inAirCameraPitch = 18f;
+    // NOTE: renamed from inAirCamTilt / StartHeight / EndHeight / ReceiverFocus* / FieldOfView so these new
+    // defaults take effect (Unity keeps a component's saved values over a script's changed defaults).
+    [Tooltip("Degrees the camera looks down at the field. Madden's in-air view is nearly level (~10), so the far field and stands show and a defender can see the ball coming. It always faces downfield (the way the QB faced at release).")]
+    public float inAirCamTilt = 10f;
     [Tooltip("Camera height above the field right after the throw, in receiver heights (measured from his character, so it works at any scale).")]
-    public float inAirCameraStartHeight = 5f;
-    [Tooltip("Camera height above the field as the ball reaches the WR, in receiver heights (smaller = more zoomed in).")]
-    public float inAirCameraEndHeight = 3.5f;
+    public float inAirCamStartHeight = 2.5f;
+    [Tooltip("Camera height above the field as the ball reaches the WR, in receiver heights (smaller = lower / more zoomed in).")]
+    public float inAirCamEndHeight = 1.8f;
     [Tooltip("Where the camera centres on the field between the ball's spot (0) and the WR (1), right after the throw.")]
-    [Range(0f, 1f)] public float inAirCameraReceiverFocusStart = 0.35f;
+    [Range(0f, 1f)] public float inAirCamFocusStart = 0.35f;
     [Tooltip("Where the camera centres between the ball's spot (0) and the WR (1), as the ball reaches the WR.")]
-    [Range(0f, 1f)] public float inAirCameraReceiverFocusEnd = 0.75f;
-    public float inAirCameraFieldOfView = 50f;
+    [Range(0f, 1f)] public float inAirCamFocusEnd = 0.7f;
+    public float inAirCamFieldOfView = 50f;
     [Tooltip("Fraction of the screen the ball and WR must stay inside; the camera backs off until they do (1 = screen edge).")]
     [Range(0.3f, 1f)] public float inAirCameraFramingArea = 0.8f;
     [Tooltip("Seconds the camera takes to catch up to where it should be.")]
@@ -390,12 +392,12 @@ public class QB : MonoBehaviour
 
     /// <summary>
     /// Madden-style camera while the ball is in the air. Like Madden's, it doesn't turn with the throw: it always faces
-    /// downfield (+Z or -Z, the way the QB faced at release), tilted down a little (inAirCameraPitch, ~18 degrees, so the
-    /// far field shows at the top), from a steady height. It centres on a point on the field that starts between the
+    /// downfield (+Z or -Z, the way the QB faced at release), nearly level (inAirCamTilt, ~10 degrees, so the far field
+    /// and stands show and a defender can see the ball coming), from a low, steady height. It centres on a point on the field that starts between the
     /// ball's spot on the ground and the receiver and moves towards the receiver as the ball arrives, so you read depth
     /// from the ball against the yard lines and see the WR and any defender near him for the catch.
     /// Heights are in receiver heights (measured from his character at release), so it frames the play the same at any
-    /// scale; it starts at inAirCameraStartHeight and comes down to inAirCameraEndHeight (a bit closer than Madden).
+    /// scale; it starts at inAirCamStartHeight and comes down to inAirCamEndHeight (a bit closer than Madden).
     /// If the ball (up in its arc) or the WR would leave the middle inAirCameraFramingArea of the screen, it backs off
     /// along the view until both fit. Position and rotation are smoothed. Hands over to the existing after-catch
     /// camera once the ball is caught / stopped.
@@ -430,23 +432,23 @@ public class QB : MonoBehaviour
 
         float progress = timeToCatch > 0f ? Mathf.Clamp01((Time.time - timeThrown) / timeToCatch) : 1f;
         float eased = Mathf.SmoothStep(0f, 1f, progress);
-        Vector3 focus = Vector3.Lerp(ballSpot, receiverSpot, Mathf.Lerp(inAirCameraReceiverFocusStart, inAirCameraReceiverFocusEnd, eased));
+        Vector3 focus = Vector3.Lerp(ballSpot, receiverSpot, Mathf.Lerp(inAirCamFocusStart, inAirCamFocusEnd, eased));
 
         // Fixed view: downfield, tilted down.
         Vector3 downfield = inAirCameraDownfield.sqrMagnitude > 0f ? inAirCameraDownfield : Vector3.forward;
         Vector3 cameraRight = Vector3.Cross(Vector3.up, downfield);
-        float pitch = Mathf.Clamp(inAirCameraPitch, 5f, 85f);
+        float pitch = Mathf.Clamp(inAirCamTilt, 2f, 85f);
         Vector3 lookDirection = Quaternion.AngleAxis(pitch, cameraRight) * downfield;
         Quaternion viewRotation = Quaternion.LookRotation(lookDirection, Vector3.up);
 
         // Height in receiver heights; the distance along the view follows from the tilt so the focus point sits in
         // the middle of the screen.
         float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
-        float height = Mathf.Lerp(inAirCameraStartHeight, inAirCameraEndHeight, eased) * unit;
+        float height = Mathf.Lerp(inAirCamStartHeight, inAirCamEndHeight, eased) * unit;
         float range = height / Mathf.Sin(pitch * Mathf.Deg2Rad);
 
         // Back off (along the view) until the ball and the WR fit in the framing area.
-        float fieldOfView = inAirCameraFieldOfView;
+        float fieldOfView = inAirCamFieldOfView;
         float aspect = inAirCamera != null ? inAirCamera.aspect : 16f / 9f;
         float halfHeight = Mathf.Tan(fieldOfView * 0.5f * Mathf.Deg2Rad) * inAirCameraFramingArea;
         float halfWidth = halfHeight * aspect;
