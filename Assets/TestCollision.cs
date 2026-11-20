@@ -503,6 +503,13 @@ private string collisionGameObjectName = "";
 
     private void OnCollisionEnter(Collision collision)
     {
+        // Only the hands of the WR this ball was thrown to (wrBodyPosition) catch it. Before, any "Hand" collider
+        // counted, so brushing another WR's hand (e.g. WRB's, near the QB) gave the catch to the target WR and the ball
+        // was snapped straight to his palm. Other players' hands still deflect it physically.
+        if (collision.collider.gameObject.tag == "Hand" && wrBodyPosition != null && !collision.collider.transform.IsChildOf(wrBodyPosition))
+        {
+            return;
+        }
         if (collision.collider.gameObject.tag == "Cube" || collision.collider.gameObject.tag == "Hand") {
             //addForce = true;
             //withinRange = true;

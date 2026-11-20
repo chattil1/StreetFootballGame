@@ -1902,6 +1902,12 @@ public class WR : MonoBehaviour
         {
             return;
         }
+        // Only the WR the ball was thrown to (another WR's sweep would pull the ball onto his palm).
+        TestCollision ballFlight = ball.GetComponent<TestCollision>();
+        if (ballFlight != null && ballFlight.wrBodyPosition != null && ballFlight.wrBodyPosition != transform)
+        {
+            return;
+        }
         Collider ballCollider = ball.GetComponentInChildren<Collider>();
         Vector3 ballCenterOffset = ballCollider != null ? ballCollider.bounds.center - ball.position : Vector3.zero;
         float ballRadius = 0.1f;

@@ -18,14 +18,18 @@ public class QB : MonoBehaviour
     [Header("In-Air Camera (Madden-style)")]
     [Tooltip("Use the Madden-style camera while the ball is in the air. Off = the old fixed (0, 5, -50) offset.")]
     public bool useBroadcastInAirCamera = true;
-    // NOTE: renamed from inAirCamTilt / StartHeight / EndHeight / ReceiverFocus* / FieldOfView so these new
-    // defaults take effect (Unity keeps a component's saved values over a script's changed defaults).
+    // Unity keeps a component's saved values over a script's changed defaults, so when these defaults change,
+    // InAirCamDefaultsVersion goes up and OnValidate applies the new defaults once (your own tweaks stay after that).
+    [SerializeField, HideInInspector] private int inAirCamDefaultsVersion = 0;
+    const int InAirCamDefaultsVersion = 1;
     [Tooltip("Degrees the camera looks down at the field. Madden's in-air view is nearly level (~10), so the far field and stands show and a defender can see the ball coming. It always faces downfield (the way the QB faced at release).")]
     public float inAirCamTilt = 10f;
-    [Tooltip("Camera height above the field right after the throw, in receiver heights (measured from his character, so it works at any scale). With the tilt this also sets how far back it is.")]
-    public float inAirCamHeightAtThrow = 2f;
-    [Tooltip("Camera height above the field as the ball reaches the WR, in receiver heights (smaller = closer / more zoomed in).")]
-    public float inAirCamHeightAtCatch = 1.2f;
+    [Tooltip("Distance from the camera to the point it aims at, right after the throw, in receiver heights (measured from his character, so it works at any scale).")]
+    public float inAirCamDistanceAtThrow = 9f;
+    [Tooltip("Distance from the camera to the point it aims at as the ball reaches the WR, in receiver heights (smaller = closer / bigger receiver).")]
+    public float inAirCamDistanceAtCatch = 5f;
+    [Tooltip("Height of the point the camera aims at, in receiver heights (0.55 = about chest height), so getting closer doesn't put the camera below the players' heads.")]
+    public float inAirCamAimHeight = 0.55f;
     [Tooltip("Where the camera centres on the field between the ball's spot (0) and the WR (1), right after the throw.")]
     [Range(0f, 1f)] public float inAirCamCenterAtThrow = 0.5f;
     [Tooltip("Where the camera centres between the ball's spot (0) and the WR (1), as the ball reaches the WR.")]
@@ -102,6 +106,23 @@ public class QB : MonoBehaviour
 
     public string PlayBookName = "Playbook_Canvas";
     // Start is called before the first frame update
+    void OnValidate()
+    {
+        // Apply new in-air camera defaults once when they change (see InAirCamDefaultsVersion).
+        if (inAirCamDefaultsVersion < InAirCamDefaultsVersion)
+        {
+            inAirCamTilt = 10f;
+            inAirCamDistanceAtThrow = 9f;
+            inAirCamDistanceAtCatch = 5f;
+            inAirCamAimHeight = 0.55f;
+            inAirCamCenterAtThrow = 0.5f;
+            inAirCamCenterAtCatch = 1f;
+            inAirCamFieldOfView = 50f;
+            inAirCamFramingArea = 0.9f;
+            inAirCamDefaultsVersion = InAirCamDefaultsVersion;
+        }
+    }
+
     void Awake()
     {
         wrX.GetComponent<WR>().SetFootballInstance(football);
@@ -397,7 +418,7 @@ public class QB : MonoBehaviour
     /// ball's spot on the ground and the receiver and moves onto the receiver as the ball arrives, so you read depth
     /// from the ball against the yard lines and see the WR and any defender near him for the catch.
     /// Heights are in receiver heights (measured from his character at release), so it frames the play the same at any
-    /// scale; it starts at inAirCamHeightAtThrow and comes down to inAirCamHeightAtCatch, ending up centred on the receiver.
+    /// scale; it aims at about chest height and closes in from inAirCamDistanceAtThrow to inAirCamDistanceAtCatch, ending up centred on the receiver.
     /// If the ball (up in its arc) or the WR would leave the middle inAirCamFramingArea of the screen, it backs off
     /// along the view until both fit. Position and rotation are smoothed. Hands over to the existing after-catch
     /// camera once the ball is caught / stopped.
@@ -441,11 +462,10 @@ public class QB : MonoBehaviour
         Vector3 lookDirection = Quaternion.AngleAxis(pitch, cameraRight) * downfield;
         Quaternion viewRotation = Quaternion.LookRotation(lookDirection, Vector3.up);
 
-        // Height in receiver heights; the distance along the view follows from the tilt so the focus point sits in
-        // the middle of the screen.
         float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
-        float height = Mathf.Lerp(inAirCamHeightAtThrow, inAirCamHeightAtCatch, eased) * unit;
-        float range = height / Mathf.Sin(pitch * Mathf.Deg2Rad);
+        // Aim at about chest height above the focus spot, from inAirCamDistanceAtThrow -> AtCatch receiver heights.
+        focus += Vector3.up * (inAirCamAimHeight * unit);
+        float range = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, eased) * unit;
 
         // Back off (along the view) until the ball and the WR fit in the framing area.
         float fieldOfView = inAirCamFieldOfView;
