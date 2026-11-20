@@ -199,6 +199,14 @@ public class QB : MonoBehaviour
 
     void Awake()
     {
+        // The throw animation's ReleaseFootball event runs on EVERY QB component on the animated object, so a second
+        // (unfilled) QB component there throws errors like "wrXFoot of QB has not been assigned" at release.
+        QB[] qbsHere = GetComponents<QB>();
+        if (qbsHere.Length > 1 && qbsHere[0] == this)
+        {
+            Debug.LogError("QB: '" + name + "' has " + qbsHere.Length + " QB components. Remove the extra one(s) (the one with empty fields); " +
+                "the throw animation's ReleaseFootball event calls every one of them.", this);
+        }
         wrX.GetComponent<WR>().SetFootballInstance(football);
         wrB.GetComponent<WR>().SetFootballInstance(football);
         wrX.GetComponent<WR>().SetCanSetThrowTarget(true);
@@ -1846,10 +1854,15 @@ public class QB : MonoBehaviour
             Camera c = mainCamera.GetComponent<Camera>();
 
             Vector3 expectedCamPosition = posAtTop + (new Vector3(0, 5f, -50f));
-            wrXPositionWhenBallThrown = wrXFoot.transform.position;
-            expectedCamPosition = GetPositionBetween(c, football, wrXFoot.gameObject, expectedCamPosition, posAtTop, wrXFoot.transform.position);
-            expectedCamPosition = new Vector3(expectedCamPosition.x, posAtTop.y, expectedCamPosition.z);
-            requiredFOV = CalculateRequiredFOV(c, expectedCamPosition, posAtTop, wrXFoot.transform.position);
+            // Only the old camera uses these; skip them with the Madden-style camera (and don't need wrXFoot then).
+            Transform receiverFoot = wrXFoot != null ? wrXFoot : wrToUse.transform;
+            wrXPositionWhenBallThrown = receiverFoot.position;
+            if (!useBroadcastInAirCamera)
+            {
+                expectedCamPosition = GetPositionBetween(c, football, receiverFoot.gameObject, expectedCamPosition, posAtTop, receiverFoot.position);
+                expectedCamPosition = new Vector3(expectedCamPosition.x, posAtTop.y, expectedCamPosition.z);
+                requiredFOV = CalculateRequiredFOV(c, expectedCamPosition, posAtTop, receiverFoot.position);
+            }
             //lineRenderer.
 
 
