@@ -21,13 +21,13 @@ public class QB : MonoBehaviour
     // Unity keeps a component's saved values over a script's changed defaults, so when these defaults change,
     // InAirCamDefaultsVersion goes up and OnValidate applies the new defaults once (your own tweaks stay after that).
     [SerializeField, HideInInspector] private int inAirCamDefaultsVersion = 0;
-    const int InAirCamDefaultsVersion = 1;
+    const int InAirCamDefaultsVersion = 2;
     [Tooltip("Degrees the camera looks down at the field. Madden's in-air view is nearly level (~10), so the far field and stands show and a defender can see the ball coming. It always faces downfield (the way the QB faced at release).")]
     public float inAirCamTilt = 10f;
     [Tooltip("Distance from the camera to the point it aims at, right after the throw, in receiver heights (measured from his character, so it works at any scale).")]
-    public float inAirCamDistanceAtThrow = 9f;
+    public float inAirCamDistanceAtThrow = 7.5f;
     [Tooltip("Distance from the camera to the point it aims at as the ball reaches the WR, in receiver heights (smaller = closer / bigger receiver).")]
-    public float inAirCamDistanceAtCatch = 5f;
+    public float inAirCamDistanceAtCatch = 4f;
     [Tooltip("Height of the point the camera aims at, in receiver heights (0.55 = about chest height), so getting closer doesn't put the camera below the players' heads.")]
     public float inAirCamAimHeight = 0.55f;
     [Tooltip("Where the camera centres on the field between the ball's spot (0) and the WR (1), right after the throw.")]
@@ -112,8 +112,8 @@ public class QB : MonoBehaviour
         if (inAirCamDefaultsVersion < InAirCamDefaultsVersion)
         {
             inAirCamTilt = 10f;
-            inAirCamDistanceAtThrow = 9f;
-            inAirCamDistanceAtCatch = 5f;
+            inAirCamDistanceAtThrow = 7.5f;
+            inAirCamDistanceAtCatch = 4f;
             inAirCamAimHeight = 0.55f;
             inAirCamCenterAtThrow = 0.5f;
             inAirCamCenterAtCatch = 1f;
