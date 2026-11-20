@@ -588,14 +588,88 @@ public class QB : MonoBehaviour
     /// </summary>
     private void FixedUpdate()
     {
-        if (!thrown || parentFootballPosition == null || BallGravityMultiplier <= 1f)
+        if (!thrown || parentFootballPosition == null)
         {
             return;
         }
         Rigidbody ballBody = parentFootballPosition.GetComponent<Rigidbody>();
-        if (ballBody != null && !ballBody.isKinematic && ballBody.useGravity)
+        if (BallGravityMultiplier > 1f && ballBody != null && !ballBody.isKinematic && ballBody.useGravity)
         {
             ballBody.AddForce(Physics.gravity * (BallGravityMultiplier - 1f), ForceMode.Acceleration);
+        }
+        UpdatePassCheck(ballBody);
+    }
+
+    [Tooltip("Logs each pass to the Console: how far the ball was from the aimed spot when due, how close it came to the receiver's left palm, and his speed at the throw vs when it was due.")]
+    public bool logPassAccuracy = true;
+    WR passCheckReceiver;
+    Vector3 passCheckTarget;
+    Vector3 passCheckLaunchVelocity;
+    Vector3 passCheckReceiverVelocity;
+    float passCheckStartTime;
+    float passCheckClosest;
+    float passCheckClosestTime;
+    float passCheckReceiverSpeedAtArrival;
+    float passCheckTargetMiss = -1f;
+    Vector3 passCheckTargetOffset;
+    bool passCheckActive;
+
+    void StartPassCheck(WR receiver, Vector3 target, float releaseDelay, Vector3 launchVelocity, Vector3 receiverVelocity)
+    {
+        passCheckActive = logPassAccuracy && receiver != null;
+        passCheckReceiver = receiver;
+        passCheckTarget = target;
+        passCheckLaunchVelocity = launchVelocity;
+        passCheckReceiverVelocity = receiverVelocity;
+        passCheckStartTime = Time.time + releaseDelay;
+        passCheckClosest = float.MaxValue;
+        passCheckClosestTime = 0f;
+        passCheckReceiverSpeedAtArrival = 0f;
+        passCheckTargetMiss = -1f;
+        passCheckTargetOffset = Vector3.zero;
+    }
+
+    /// <summary>
+    /// Follows the pass and logs it once (when caught, or half a second after it was due): where the ball was
+    /// relative to the aimed spot when it was due (is the throw itself right?), and how close it came to the
+    /// receiver's actual left palm (did the receiver get there?).
+    /// </summary>
+    void UpdatePassCheck(Rigidbody ballBody)
+    {
+        if (!passCheckActive || ballBody == null || passCheckReceiver == null)
+        {
+            return;
+        }
+        float flightTime = Time.fixedTime - passCheckStartTime;
+        Vector3 palm = passCheckReceiver.GetLeftHandChildPosition("LeftPalmCatchArea");
+        float toPalm = Vector3.Distance(ballBody.position, palm);
+        if (toPalm < passCheckClosest)
+        {
+            passCheckClosest = toPalm;
+            passCheckClosestTime = flightTime;
+        }
+        if (passCheckTargetMiss < 0f && flightTime >= timeToCatch - 1e-4f)
+        {
+            passCheckTargetOffset = ballBody.position - passCheckTarget;
+            passCheckTargetMiss = passCheckTargetOffset.magnitude;
+            Rigidbody receiverBody = passCheckReceiver.GetComponent<Rigidbody>();
+            passCheckReceiverSpeedAtArrival = receiverBody != null ? Vector3.ProjectOnPlane(receiverBody.velocity, Vector3.up).magnitude : 0f;
+        }
+        bool caught = passCheckReceiver.caughtFootball != null || ballBody.isKinematic;
+        if (caught || flightTime > timeToCatch + 0.5f)
+        {
+            passCheckActive = false;
+            float unit = Mathf.Max(0.01f, passCheckReceiver.GetUnitsPerMeter());
+            float mph = unit * 0.44704f;
+            Debug.Log(string.Format(
+                "Pass check ({0}): flight {1:0.00}s planned. When due, the ball was {2:0.0} units ({3:0.00} m) from the aimed spot (offset {4}). " +
+                "Closest to his left palm: {5:0.0} units ({6:0.00} m) at {7:0.00}s. Launch {8:0} units/s ({9:0} mph). " +
+                "Receiver speed at throw {10:0} units/s ({11:0.0} mph), when due {12:0} units/s ({13:0.0} mph).",
+                caught ? "CAUGHT" : "not caught", timeToCatch, passCheckTargetMiss, passCheckTargetMiss / unit, passCheckTargetOffset,
+                passCheckClosest, passCheckClosest / unit, passCheckClosestTime,
+                passCheckLaunchVelocity.magnitude, passCheckLaunchVelocity.magnitude / mph,
+                passCheckReceiverVelocity.magnitude, passCheckReceiverVelocity.magnitude / mph,
+                passCheckReceiverSpeedAtArrival, passCheckReceiverSpeedAtArrival / mph));
         }
     }
 
@@ -1301,13 +1375,17 @@ public class QB : MonoBehaviour
             float unitsPerMeter = receiver.GetUnitsPerMeter();
             BallGravityMultiplier = scaleBallGravityToPlayerSize ? Mathf.Max(1f, unitsPerMeter) : 1f;
             float ballGravity = Mathf.Abs(Physics.gravity.y) * BallGravityMultiplier;
+            receiverVelocity = Vector3.ProjectOnPlane(receiverVelocity, Vector3.up);
+            float fixedStep = Time.fixedDeltaTime;
+            // The impulse only takes effect at the next physics step, but the receiver keeps running until then.
+            float releaseDelay = Mathf.Clamp(Time.fixedTime + fixedStep - Time.time, 0f, fixedStep);
             if (useRealWorldPassSpeed)
             {
                 float releaseSpeed = passReleaseSpeedMph * 0.44704f * unitsPerMeter;
                 timeToCatch = PassFlightTime(Vector3.ProjectOnPlane(receiverPalm - football.transform.position, Vector3.up).magnitude, releaseSpeed, ballGravity);
-                for (int i = 0; i < 4; i++)
+                for (int i = 0; i < 6; i++)
                 {
-                    Vector3 ledPalm = receiverPalm + receiverVelocity * timeToCatch;
+                    Vector3 ledPalm = receiverPalm + receiverVelocity * (releaseDelay + timeToCatch);
                     timeToCatch = PassFlightTime(Vector3.ProjectOnPlane(ledPalm - football.transform.position, Vector3.up).magnitude, releaseSpeed, ballGravity);
                 }
             }
@@ -1315,7 +1393,9 @@ public class QB : MonoBehaviour
             {
                 timeToCatch = 4f;
             }
-            throwingTargetPosition = receiverPalm + (receiverVelocity * timeToCatch);
+            // Whole physics steps, so the ball is exactly at the target on a step (not between two).
+            timeToCatch = Mathf.Max(1, Mathf.Round(timeToCatch / fixedStep)) * fixedStep;
+            throwingTargetPosition = receiverPalm + (receiverVelocity * (releaseDelay + timeToCatch));
             // Aim at the predicted palm itself. (The old half-hand-spacing offset along handForCatch.forward used the
             // hand's direction and spacing at release, which mid run swing point anywhere and pushed the aim off
             // by up to half an arm's length.)
@@ -1347,7 +1427,9 @@ public class QB : MonoBehaviour
 
             if (throwingTargetPosition.magnitude > 0)
             {
-                velY = ((0.5f * ballGravity * (timeToCatch * timeToCatch)) + (throwingTargetPosition.y - football.transform.position.y)) / (timeToCatch);
+                // Physics steps velocity before position (semi-implicit Euler), so after N steps of dt the ball has
+                // dropped g*dt²*N(N+1)/2 = g*T*(T+dt)/2, a little more than the exact g*T²/2. Aim for what physics does.
+                velY = ((0.5f * ballGravity * timeToCatch * (timeToCatch + fixedStep)) + (throwingTargetPosition.y - football.transform.position.y)) / (timeToCatch);
                 
 
             }
@@ -1466,6 +1548,7 @@ public class QB : MonoBehaviour
 
 
             parentFootballPosition.GetComponent<Rigidbody>().AddForce(impulseForceOfficial, ForceMode.Impulse);
+            StartPassCheck(receiver, throwingTargetPosition, releaseDelay, new Vector3(velX, velY, velZ), receiverVelocity);
 
             float stepTime = timeInAir / lineCount;
             float timeVal = Mathf.Abs(timeInAir);
