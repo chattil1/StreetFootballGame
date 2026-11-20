@@ -24,7 +24,7 @@ public class QB : MonoBehaviour
     const int InAirCamDefaultsVersion = 5;
     [Tooltip("Degrees the camera looks down at the field. Madden's in-air view is nearly level (~10), so the far field and stands show and a defender can see the ball coming. It always faces downfield (the way the QB faced at release).")]
     public float inAirCamTilt = 10f;
-    [Tooltip("Distance from the camera to the point it aims at, right after the throw, in receiver heights (measured from his character, so it works at any scale).")]
+    [Tooltip("The MOST the camera may back off during the flight to keep the ball in view, in receiver heights (this limit eases down to Distance At Catch as the ball reaches the WR). It only backs off past Distance At Catch as much as needed, after first lifting (up to Raise At Throw).")]
     public float inAirCamDistanceAtThrow = 7.5f;
     [Tooltip("Distance from the camera to the point it aims at as the ball reaches the WR, in receiver heights (smaller = closer / bigger receiver).")]
     public float inAirCamDistanceAtCatch = 4f;
@@ -521,9 +521,11 @@ public class QB : MonoBehaviour
         Quaternion viewRotation = Quaternion.LookRotation(lookDirection, Vector3.up);
 
         float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
-        // Aim at about chest height above the focus spot, from inAirCamDistanceAtThrow -> AtCatch receiver heights.
+        // Aim at about chest height above the focus spot. Distance: normally Distance At Catch; Distance At Throw is
+        // the most it may back off for the ball (that limit eases down to Distance At Catch over the flight).
         focus += Vector3.up * (inAirCamAimHeight * unit);
-        float range = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, eased) * unit;
+        float range = inAirCamDistanceAtCatch * unit;
+        float maxBallRange = Mathf.Max(inAirCamDistanceAtCatch, Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, eased)) * unit;
 
         // The camera sits inAirCamRaiseAtThrow -> AtCatch receiver heights higher and still aims at the focus.
         // Two distances: one that keeps the WR in the framing area, one that keeps the ball in it too. The camera
@@ -551,7 +553,8 @@ public class QB : MonoBehaviour
             raise = Vector3.up * (raiseAmount * unit);
             receiverRange = InAirCameraRange(focus, lookDirection, raise, range, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
             ballRange = letGo < 1f
-                ? InAirCameraRange(focus, lookDirection, raise, receiverRange, true, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight)
+                ? Mathf.Max(receiverRange, Mathf.Min(maxBallRange,
+                    InAirCameraRange(focus, lookDirection, raise, receiverRange, true, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight)))
                 : receiverRange;
             if (letGo >= 1f || maxRaise <= baseRaise || ballRange <= receiverRange * 1.0001f)
             {
