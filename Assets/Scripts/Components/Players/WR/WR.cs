@@ -3527,7 +3527,7 @@ public class WR : MonoBehaviour
                     cameraSetAfterCatch = true;
                 }*/
                 // The QB's camera follows the WR after the catch (QB.FollowReceiverAfterCatch); only turn it here when it doesn't.
-                if (!QB.CameraFollowingReceiver)
+                if (!global::QB.CameraFollowingReceiver)
                 {
                     ITransformRotation mainCameraController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, mainCamera.transform, mainCamera.transform, leftHand, Vector2.zero, mainCamera.transform.forward, Vector3.forward, Vector3.up, Vector3.forward, 15f, "LeftArm", new PlaneViewModel() { });
                     List<KeyValuePair<string, bool>> mainCameraRotation = mainCameraController.AlignTransformAxis();
