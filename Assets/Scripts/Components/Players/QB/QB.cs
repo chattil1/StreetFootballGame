@@ -41,6 +41,13 @@ public class QB : MonoBehaviour
     public float inAirCameraPositionSmoothTime = 0.3f;
     [Tooltip("How quickly the camera turns to face downfield (higher = snappier).")]
     public float inAirCameraTurnSpeed = 5f;
+    [Tooltip("After the catch, the camera keeps the exact offset it has from the WR at its catch spot (the In Air Cam Distance At Catch view) and follows him with it.")]
+    public bool followReceiverAfterCatch = true;
+    [Tooltip("Seconds the camera takes to settle into its catch-spot offset from the WR after the catch (from then on it moves exactly with him).")]
+    public float afterCatchSettleTime = 0.3f;
+    /// <summary>True while the QB's camera is following the WR after the catch (WR.cs then leaves the camera alone).</summary>
+    public static bool CameraFollowingReceiver = false;
+    private Vector3 afterCatchOffsetVelocity = Vector3.zero;
     private Vector3 inAirCameraVelocity = Vector3.zero;
     private Vector3 inAirCameraThrowDirection = Vector3.zero;
     private Vector3 inAirCameraDownfield = Vector3.forward;
@@ -425,7 +432,12 @@ public class QB : MonoBehaviour
     /// </summary>
     void UpdateInAirCamera()
     {
+        CameraFollowingReceiver = false;
         if (!useBroadcastInAirCamera || !thrown || mainCamera == null || football == null)
+        {
+            return;
+        }
+        if (FollowReceiverAfterCatch())
         {
             return;
         }
@@ -493,6 +505,51 @@ public class QB : MonoBehaviour
         {
             inAirCamera.fieldOfView = Mathf.Lerp(inAirCamera.fieldOfView, fieldOfView, 1f - Mathf.Exp(-4f * Time.deltaTime));
         }
+    }
+
+    /// <summary>
+    /// After the catch: the camera keeps the same view (downfield, inAirCamTilt, inAirCamFieldOfView) and the exact
+    /// offset from the WR that it has at the catch spot (aiming at inAirCamAimHeight on him from inAirCamDistanceAtCatch),
+    /// and moves with him. The offset (not the world position) is what eases in, over afterCatchSettleTime, so the camera
+    /// never lags behind a running WR; once settled the delta is exact. Returns false if there's no caught ball.
+    /// </summary>
+    bool FollowReceiverAfterCatch()
+    {
+        if (!followReceiverAfterCatch)
+        {
+            return false;
+        }
+        GameObject receiverObject = throwBPerformed ? wrB : wrX;
+        WR receiver = receiverObject != null ? receiverObject.GetComponent<WR>() : null;
+        if (receiver == null || receiver.caughtFootball == null)
+        {
+            afterCatchOffsetVelocity = Vector3.zero;
+            return false;
+        }
+        Transform cameraTransform = mainCamera.transform;
+        Camera followCamera = mainCamera.GetComponent<Camera>();
+
+        // The same view as the in-air camera at the catch.
+        Vector3 downfield = inAirCameraDownfield.sqrMagnitude > 0f ? inAirCameraDownfield : Vector3.forward;
+        Vector3 cameraRight = Vector3.Cross(Vector3.up, downfield);
+        float pitch = Mathf.Clamp(inAirCamTilt, 2f, 85f);
+        Vector3 lookDirection = Quaternion.AngleAxis(pitch, cameraRight) * downfield;
+        Quaternion viewRotation = Quaternion.LookRotation(lookDirection, Vector3.up);
+        float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
+        Vector3 catchSpotOffset = Vector3.up * (inAirCamAimHeight * unit) - lookDirection * (inAirCamDistanceAtCatch * unit);
+
+        Vector3 receiverPosition = receiverObject.transform.position;
+        Vector3 currentOffset = cameraTransform.position - receiverPosition;
+        Vector3 offset = Vector3.SmoothDamp(currentOffset, catchSpotOffset, ref afterCatchOffsetVelocity, Mathf.Max(0.01f, afterCatchSettleTime));
+        cameraTransform.position = receiverPosition + offset;
+        float turn = 1f - Mathf.Exp(-inAirCameraTurnSpeed * Time.deltaTime);
+        cameraTransform.rotation = Quaternion.Slerp(cameraTransform.rotation, viewRotation, turn);
+        if (followCamera != null)
+        {
+            followCamera.fieldOfView = Mathf.Lerp(followCamera.fieldOfView, inAirCamFieldOfView, 1f - Mathf.Exp(-4f * Time.deltaTime));
+        }
+        CameraFollowingReceiver = true;
+        return true;
     }
 
     /// <summary>
