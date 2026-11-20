@@ -36,7 +36,7 @@ public class QB : MonoBehaviour
     [Range(0f, 1f)] public float inAirCamCenterAtCatch = 1f;
     [Tooltip("Camera field of view (degrees) while the ball is in the air and after the catch. Smaller = more zoomed in.")]
     public float inAirCamFieldOfView = 42f;
-    [Tooltip("How much higher the camera sits right after the throw, in receiver heights. It eases to Raise At Catch as the ball reaches the WR. It always aims at the same point on him, so higher = looking down more.")]
+    [Tooltip("The MOST the camera may lift during the flight, in receiver heights (this limit eases down to Raise At Catch as the ball reaches the WR). It only lifts above Raise At Catch as much as needed to keep the top of the ball in the framing area. It always aims at the same point on him.")]
     public float inAirCamRaiseAtThrow = 1.25f;
     [Tooltip("How much higher the camera sits as the ball reaches the WR (and after the catch), in receiver heights.")]
     [UnityEngine.Serialization.FormerlySerializedAs("inAirCamRaise")]
