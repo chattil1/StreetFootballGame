@@ -556,7 +556,7 @@ public class QB : MonoBehaviour
     /// A player's height in world units, from his character's meshes (falls back to 1.8 x his scale). Used to size
     /// the in-air camera, so it frames the play the same whatever the players / field are scaled to.
     /// </summary>
-    static float MeasurePlayerHeight(GameObject player)
+    public static float MeasurePlayerHeight(GameObject player)
     {
         if (player == null)
         {

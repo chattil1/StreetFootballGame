@@ -1809,7 +1809,9 @@ public class WR : MonoBehaviour
         CatchSweep();
         GameObject football = QB.GetComponent<QB>().GetFootball();
         Vector3 twistDir = new Vector3(football.transform.position.x, 0f, football.transform.position.z);
-        bool timeOver = QB.GetComponent<QB>().GetIsThrown() && ((Time.time - QB.GetComponent<QB>().GetTimeThrown()) >= QB.GetComponent<QB>().GetTimeToCatch()) ? true : false;
+        // The play's catch window (time to catch after the throw) only stops the WR while the ball isn't caught;
+        // once he has it he can run after the catch for as long as he likes.
+        bool timeOver = caughtFootball == null && QB.GetComponent<QB>().GetIsThrown() && ((Time.time - QB.GetComponent<QB>().GetTimeThrown()) >= QB.GetComponent<QB>().GetTimeToCatch()) ? true : false;
         Rigidbody rb = gameObject.GetComponent<Rigidbody>();
         float xValue = Mathf.Abs(rb.gameObject.transform.forward.x) > 0.01f ? rb.gameObject.transform.forward.x : 0f;
         float zValue = Mathf.Abs(rb.gameObject.transform.forward.z) > 0.01f ? rb.gameObject.transform.forward.z : 0f;
