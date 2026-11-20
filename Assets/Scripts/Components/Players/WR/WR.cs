@@ -82,6 +82,11 @@ public class WR : MonoBehaviour
     [Header("Catching")]
     [Tooltip("Old behaviour: pressing catch on the ground leaps the WR towards the stick. Off = keep running while catching.")]
     public bool leapWhenCatching = false;
+    [Tooltip("Players are scaled up (~35x), so normal gravity is far too weak for them. While in the air, scale gravity up by his height in units / Real Player Height Meters so he falls like a real player.")]
+    public bool scaleAirGravityToPlayerSize = true;
+    [Tooltip("Real height (m) the WR's model stands for. 1.88 m = 6'2\" (average NFL player).")]
+    public float realPlayerHeightMeters = 1.88f;
+    private float playerHeightUnits = 0f;
 
     [Header("Catch Assist (while the ball is in the air)")]
     [Tooltip("Most the left arm's aim is pulled from the stick target towards the ball (0..1).")]
@@ -1029,7 +1034,8 @@ public class WR : MonoBehaviour
         }
         else if (!canRun && !canMoveAround && playerOnGround)
         {
-            Vector3 velocity = gameObject.GetComponent<Rigidbody>().velocity;
+            // Brake the horizontal velocity only (braking the vertical too fought gravity).
+            Vector3 velocity = Vector3.ProjectOnPlane(gameObject.GetComponent<Rigidbody>().velocity, Vector3.up);
             gameObject.GetComponent<Rigidbody>().AddForce(-velocity, ForceMode.Impulse);
         }
         /*if (isCatching)
@@ -1806,6 +1812,7 @@ public class WR : MonoBehaviour
     }
     private void FixedUpdate()
     {
+        ApplyScaledAirGravity();
         CatchSweep();
         GameObject football = QB.GetComponent<QB>().GetFootball();
         Vector3 twistDir = new Vector3(football.transform.position.x, 0f, football.transform.position.z);
@@ -1835,8 +1842,12 @@ public class WR : MonoBehaviour
             // While catching (Y), run at whatever velocity gets the left palm to where the ball comes down when it
             // gets there; otherwise run forward at top speed.
             Vector3 runVelocity = TryGetCatchRunVelocity(out Vector3 catchRunVelocity) ? catchRunVelocity : editedForward.normalized * targetSpeed;
-            Vector3 desiredVelocity = Vector3.MoveTowards(gameObject.GetComponent<Rigidbody>().velocity, runVelocity, runAcceleration * Time.fixedDeltaTime);
-            Vector3 acceleration = (desiredVelocity - gameObject.GetComponent<Rigidbody>().velocity) / Time.fixedDeltaTime;
+            // Only steer the horizontal velocity. Steering all of it pulled the vertical speed towards the run
+            // direction's (about 0), which fought gravity (floaty) and pushed him up whenever he leaned / pitched.
+            runVelocity = Vector3.ProjectOnPlane(runVelocity, Vector3.up).normalized * runVelocity.magnitude;
+            Vector3 currentHorizontalVelocity = Vector3.ProjectOnPlane(gameObject.GetComponent<Rigidbody>().velocity, Vector3.up);
+            Vector3 desiredVelocity = Vector3.MoveTowards(currentHorizontalVelocity, runVelocity, runAcceleration * Time.fixedDeltaTime);
+            Vector3 acceleration = (desiredVelocity - currentHorizontalVelocity) / Time.fixedDeltaTime;
             gameObject.GetComponent<Rigidbody>().AddForce(acceleration * gameObject.GetComponent<Rigidbody>().mass, ForceMode.Force);
             gameObject.GetComponent<Animator>().SetBool("runningForward", true);
         }
@@ -1884,6 +1895,60 @@ public class WR : MonoBehaviour
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// The players are scaled up ~35x (a WR is ~63 units tall), but Physics.gravity is still 9.81 units/s², so in
+    /// player terms gravity was ~1/33 of real and he floated. While he's in the air this adds the rest, so he falls
+    /// like a real 6'2" player: gravity x (his height in units / realPlayerHeightMeters). On the ground nothing is
+    /// added, so friction / running feel the same. The ball keeps normal gravity (its throws are worked out with it).
+    /// </summary>
+    void ApplyScaledAirGravity()
+    {
+        Rigidbody rb = GetComponent<Rigidbody>();
+        if (!scaleAirGravityToPlayerSize || rb == null || rb.isKinematic || !rb.useGravity || playerOnGround)
+        {
+            return;
+        }
+        if (playerHeightUnits <= 0f && GetComponentInChildren<SkinnedMeshRenderer>() != null)
+        {
+            playerHeightUnits = global::QB.MeasurePlayerHeight(gameObject); // once UMA has built him
+        }
+        float height = playerHeightUnits > 0f ? playerHeightUnits : 1.8f * Mathf.Abs(transform.lossyScale.y);
+        float multiplier = Mathf.Max(1f, height / Mathf.Max(0.1f, realPlayerHeightMeters));
+        rb.AddForce(Physics.gravity * (multiplier - 1f), ForceMode.Acceleration);
+    }
+
+    /// <summary>
+    /// The caught ball rides in the hand: kinematic and not colliding, so moving it to the palm every frame can't
+    /// push the WR around (and no forces on it can either). Its joint anchor is made kinematic too.
+    /// </summary>
+    void HoldCaughtBall()
+    {
+        if (caughtFootball == null)
+        {
+            return;
+        }
+        Rigidbody ballBody = caughtFootball.GetComponent<Rigidbody>();
+        if (ballBody != null && (!ballBody.isKinematic || ballBody.detectCollisions))
+        {
+            if (!ballBody.isKinematic)
+            {
+                ballBody.velocity = Vector3.zero;
+                ballBody.angularVelocity = Vector3.zero;
+            }
+            ballBody.isKinematic = true;
+            ballBody.detectCollisions = false;
+        }
+        GameObject pivotAnchor = GameObject.Find("PivotAnchor");
+        Rigidbody pivotBody = pivotAnchor != null ? pivotAnchor.GetComponent<Rigidbody>() : null;
+        if (pivotBody != null && !pivotBody.isKinematic)
+        {
+            pivotBody.velocity = Vector3.zero;
+            pivotBody.angularVelocity = Vector3.zero;
+            pivotBody.isKinematic = true;
+            pivotBody.detectCollisions = false;
+        }
     }
 
     /// <summary>
@@ -2644,27 +2709,10 @@ public class WR : MonoBehaviour
             angleBetween = (leftArm.right.x * -1f) > deltaPos.normalized.x ? Vector3.Angle((leftArm.right * -1), deltaPos.normalized) : -Vector3.Angle((leftArm.right * -1), deltaPos.normalized);
             if (caughtFootball != null)
             {
-                GameObject pivotAnchor = GameObject.Find("PivotAnchor");
-                if (pivotAnchor != null && pivotAnchor.GetComponent<Rigidbody>() != null)
-                {
-                    Vector3 angularTorque = new Vector3(
-            pivotAnchor.GetComponent<Rigidbody>().angularVelocity.x * -1f,
-            pivotAnchor.GetComponent<Rigidbody>().angularVelocity.y * -1f,
-            pivotAnchor.GetComponent<Rigidbody>().angularVelocity.z * -1f);
-                    pivotAnchor.GetComponent<Rigidbody>().AddTorque(angularTorque, ForceMode.Impulse);
-                    pivotAnchor.GetComponent<Rigidbody>().AddForce((-1f) * pivotAnchor.GetComponent<Rigidbody>().velocity, ForceMode.Impulse);
-                    pivotAnchor.GetComponent<Rigidbody>().AddForce((-1f) * pivotAnchor.GetComponent<Rigidbody>().mass * Physics.gravity, ForceMode.Force);
-                }
-                if (gameObject.GetComponent<Rigidbody>() != null)
-                {
-                    Vector3 angularTorque = new Vector3(
-                            caughtFootball.GetComponent<Rigidbody>().angularVelocity.x * -1f,
-                            caughtFootball.GetComponent<Rigidbody>().angularVelocity.y * -1f,
-                            caughtFootball.GetComponent<Rigidbody>().angularVelocity.z * -1f);
-                    caughtFootball.GetComponent<Rigidbody>().AddTorque(angularTorque, ForceMode.Impulse);
-                    caughtFootball.GetComponent<Rigidbody>().AddForce((-1f) * gameObject.GetComponent<Rigidbody>().velocity, ForceMode.Impulse);
-                    caughtFootball.GetComponent<Rigidbody>().AddForce((-1f) * gameObject.GetComponent<Rigidbody>().mass * Physics.gravity, ForceMode.Force);
-                }
+                // The carried ball is held in the hand (moved there every frame below), not pushed by forces. The old
+                // counter-forces here (minus the WR's velocity as an impulse, minus the WR's mass x gravity) went into the
+                // ball, which was touching the WR's hand / body colliders, so it shoved him backwards and up while he ran.
+                HoldCaughtBall();
 
                 if (GameObject.Find("PivotAnchor") != null)
                 {
@@ -3551,27 +3599,10 @@ public class WR : MonoBehaviour
         else {
             if (caughtFootball != null)
             {
-                GameObject pivotAnchor = GameObject.Find("PivotAnchor");
-                if (pivotAnchor != null && pivotAnchor.GetComponent<Rigidbody>() != null)
-                {
-                    Vector3 angularTorque = new Vector3(
-                        pivotAnchor.GetComponent<Rigidbody>().angularVelocity.x * -1f,
-                        pivotAnchor.GetComponent<Rigidbody>().angularVelocity.y * -1f,
-                        pivotAnchor.GetComponent<Rigidbody>().angularVelocity.z * -1f);
-                    pivotAnchor.GetComponent<Rigidbody>().AddTorque(angularTorque, ForceMode.Impulse);
-                    pivotAnchor.GetComponent<Rigidbody>().AddForce((-1f) * pivotAnchor.GetComponent<Rigidbody>().velocity, ForceMode.Impulse);
-                    pivotAnchor.GetComponent<Rigidbody>().AddForce((-1f) * pivotAnchor.GetComponent<Rigidbody>().mass * Physics.gravity, ForceMode.Force);
-                }
-                if (gameObject.GetComponent<Rigidbody>() != null)
-                {
-                    Vector3 angularTorque = new Vector3(
-                            caughtFootball.GetComponent<Rigidbody>().angularVelocity.x * -1f,
-                            caughtFootball.GetComponent<Rigidbody>().angularVelocity.y * -1f,
-                            caughtFootball.GetComponent<Rigidbody>().angularVelocity.z * -1f);
-                    caughtFootball.GetComponent<Rigidbody>().AddTorque(angularTorque, ForceMode.Impulse);
-                    caughtFootball.GetComponent<Rigidbody>().AddForce((-1f) * gameObject.GetComponent<Rigidbody>().velocity, ForceMode.Impulse);
-                    caughtFootball.GetComponent<Rigidbody>().AddForce((-1f) * gameObject.GetComponent<Rigidbody>().mass * Physics.gravity, ForceMode.Force);
-                }
+                // The carried ball is held in the hand (moved there every frame below), not pushed by forces. The old
+                // counter-forces here (minus the WR's velocity as an impulse, minus the WR's mass x gravity) went into the
+                // ball, which was touching the WR's hand / body colliders, so it shoved him backwards and up while he ran.
+                HoldCaughtBall();
 
                 if (GameObject.Find("PivotAnchor") != null)
                 {
