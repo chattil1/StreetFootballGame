@@ -21,7 +21,7 @@ public class QB : MonoBehaviour
     // Unity keeps a component's saved values over a script's changed defaults, so when these defaults change,
     // InAirCamDefaultsVersion goes up and OnValidate applies the new defaults once (your own tweaks stay after that).
     [SerializeField, HideInInspector] private int inAirCamDefaultsVersion = 0;
-    const int InAirCamDefaultsVersion = 4;
+    const int InAirCamDefaultsVersion = 5;
     [Tooltip("Degrees the camera looks down at the field. Madden's in-air view is nearly level (~10), so the far field and stands show and a defender can see the ball coming. It always faces downfield (the way the QB faced at release).")]
     public float inAirCamTilt = 10f;
     [Tooltip("Distance from the camera to the point it aims at, right after the throw, in receiver heights (measured from his character, so it works at any scale).")]
@@ -36,8 +36,11 @@ public class QB : MonoBehaviour
     [Range(0f, 1f)] public float inAirCamCenterAtCatch = 1f;
     [Tooltip("Camera field of view (degrees) while the ball is in the air and after the catch. Smaller = more zoomed in.")]
     public float inAirCamFieldOfView = 42f;
-    [Tooltip("How much higher the camera sits during the flight (and after the catch), in receiver heights. It still aims at the same point on him, so it looks down a bit more and the ball coming down shows sooner.")]
-    public float inAirCamRaise = 0.75f;
+    [Tooltip("How much higher the camera sits right after the throw, in receiver heights. It eases to Raise At Catch as the ball reaches the WR. It always aims at the same point on him, so higher = looking down more.")]
+    public float inAirCamRaiseAtThrow = 1.25f;
+    [Tooltip("How much higher the camera sits as the ball reaches the WR (and after the catch), in receiver heights.")]
+    [UnityEngine.Serialization.FormerlySerializedAs("inAirCamRaise")]
+    public float inAirCamRaiseAtCatch = 0.75f;
     [Tooltip("Fraction of the screen the ball and WR must stay inside; the camera backs off until they do (1 = screen edge).")]
     [Range(0.3f, 1f)] public float inAirCamFramingArea = 0.9f;
     [Tooltip("Seconds the camera takes to catch up to where it should be.")]
@@ -155,7 +158,7 @@ public class QB : MonoBehaviour
         {
             // Version 3 only zooms in a little (your other camera settings, e.g. Distance At Catch, are kept).
             inAirCamFieldOfView = 42f;
-            inAirCamRaise = 0.75f;
+            inAirCamRaiseAtCatch = 0.75f;
         }
         if (inAirCamDefaultsVersion < 4)
         {
@@ -163,6 +166,12 @@ public class QB : MonoBehaviour
             inAirCamFieldOfView = 34f;
             inAirCamDistanceAtCatch = 2.2f;
             inAirCamBallFrameUntil = 1f;
+        }
+        if (inAirCamDefaultsVersion < 5)
+        {
+            // Version 5 splits Raise into At Throw / At Catch: At Catch keeps your old Raise value; At Throw starts a
+            // little higher (+0.5 receiver heights).
+            inAirCamRaiseAtThrow = inAirCamRaiseAtCatch + 0.5f;
         }
         inAirCamDefaultsVersion = InAirCamDefaultsVersion;
     }
@@ -516,7 +525,7 @@ public class QB : MonoBehaviour
         focus += Vector3.up * (inAirCamAimHeight * unit);
         float range = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, eased) * unit;
 
-        // The camera sits inAirCamRaise receiver heights higher and still aims at the focus, so it looks down a bit more.
+        // The camera sits inAirCamRaiseAtThrow -> AtCatch receiver heights higher and still aims at the focus.
         // Two distances: one that keeps the WR in the framing area, one that keeps the ball in it too. The camera
         // blends from the second to the first smoothly over the flight (fully by inAirCamBallFrameUntil), so it's one
         // steady move in on the WR / the throw's target instead of backing off for a high ball and then jumping in.
@@ -525,7 +534,7 @@ public class QB : MonoBehaviour
         float aspect = inAirCamera != null ? inAirCamera.aspect : 16f / 9f;
         float halfHeight = Mathf.Tan(fieldOfView * 0.5f * Mathf.Deg2Rad) * inAirCamFramingArea;
         float halfWidth = halfHeight * aspect;
-        Vector3 raise = Vector3.up * (inAirCamRaise * unit);
+        Vector3 raise = Vector3.up * (Mathf.Lerp(inAirCamRaiseAtThrow, inAirCamRaiseAtCatch, eased) * unit);
         float receiverRange = InAirCameraRange(focus, lookDirection, raise, range, false, ballPosition, receiverPoint, receiverSpot, halfWidth, halfHeight);
         float ballRange = letGo < 1f
             ? InAirCameraRange(focus, lookDirection, raise, receiverRange, true, ballPosition, receiverPoint, receiverSpot, halfWidth, halfHeight)
@@ -599,7 +608,7 @@ public class QB : MonoBehaviour
         Vector3 lookDirection = Quaternion.AngleAxis(pitch, cameraRight) * downfield;
         Quaternion viewRotation = Quaternion.LookRotation(lookDirection, Vector3.up);
         float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
-        Vector3 catchSpotOffset = Vector3.up * (inAirCamAimHeight * unit) - lookDirection * (inAirCamDistanceAtCatch * unit) + Vector3.up * (inAirCamRaise * unit);
+        Vector3 catchSpotOffset = Vector3.up * (inAirCamAimHeight * unit) - lookDirection * (inAirCamDistanceAtCatch * unit) + Vector3.up * (inAirCamRaiseAtCatch * unit);
         // Same aim as the in-air camera at the catch spot: at inAirCamAimHeight on him, from the raised spot.
         viewRotation = Quaternion.LookRotation(Vector3.up * (inAirCamAimHeight * unit) - catchSpotOffset, Vector3.up);
 
