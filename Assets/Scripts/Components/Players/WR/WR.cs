@@ -125,6 +125,8 @@ public class WR : MonoBehaviour
     private Vector3 leftArmCatchStickTarget = Vector3.zero;
     [Tooltip("While catching (Y), extra distance (on top of the ball's and palm's size) at which a ball passing a palm is caught. Backs up the physics contact, which a fast ball can skip past.")]
     public float catchSweepMargin = 0.1f;
+    [Tooltip("Catch radius (real meters, scaled to the player's size): while catching (Y), a ball that passes this close to a palm is caught, like Madden's catch radius. 0 = the palm collider only.")]
+    public float catchReachMeters = 0.6f;
     [Tooltip("How far ahead to predict the ball, in seconds.")]
     public float ballPredictionTime = 6f;
     private readonly List<Vector3> predictedBallPath = new List<Vector3>();
@@ -2054,7 +2056,8 @@ public class WR : MonoBehaviour
                 : 0f;
             Vector3 closest = from + relativeMove * along;
             Vector3 palmToBall = closest - palmCenter;
-            if (palmToBall.magnitude > ballRadius + palmRadius + catchSweepMargin)
+            float reach = Mathf.Max(ballRadius + palmRadius + catchSweepMargin, catchReachMeters * GetUnitsPerMeter());
+            if (palmToBall.magnitude > reach)
             {
                 continue;
             }
@@ -2253,12 +2256,14 @@ public class WR : MonoBehaviour
         {
             return stickDirection;
         }
-        float catchHeight = leftArm.Find("LeftArm").position.y;
-        if (!PredictBallLanding(catchHeight, out Vector3 landingSpot, out float seconds))
+        // Steer the planned catch palm (where the QB aimed) towards where the ball comes down to its height, not the
+        // WR's body: steering the body under the ball left the palm, half a shoulder-width to the side, ~0.5 m off.
+        Vector3 catchPalm = GetLeftPalmCatchPosition();
+        if (!PredictBallLanding(catchPalm.y, out Vector3 landingSpot, out float seconds))
         {
             return stickDirection;
         }
-        Vector3 toLanding = Vector3.ProjectOnPlane(landingSpot - transform.position, Vector3.up);
+        Vector3 toLanding = Vector3.ProjectOnPlane(landingSpot - catchPalm, Vector3.up);
         if (toLanding.sqrMagnitude < 1e-6f || Vector3.Angle(flatStick, toLanding) > moveAssistMaxAngle)
         {
             return stickDirection;

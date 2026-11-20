@@ -21,7 +21,7 @@ public class QB : MonoBehaviour
     // Unity keeps a component's saved values over a script's changed defaults, so when these defaults change,
     // InAirCamDefaultsVersion goes up and OnValidate applies the new defaults once (your own tweaks stay after that).
     [SerializeField, HideInInspector] private int inAirCamDefaultsVersion = 0;
-    const int InAirCamDefaultsVersion = 3;
+    const int InAirCamDefaultsVersion = 4;
     [Tooltip("Degrees the camera looks down at the field. Madden's in-air view is nearly level (~10), so the far field and stands show and a defender can see the ball coming. It always faces downfield (the way the QB faced at release).")]
     public float inAirCamTilt = 10f;
     [Tooltip("Distance from the camera to the point it aims at, right after the throw, in receiver heights (measured from his character, so it works at any scale).")]
@@ -44,7 +44,7 @@ public class QB : MonoBehaviour
     public float inAirCameraPositionSmoothTime = 0.3f;
     [Tooltip("How quickly the camera turns to face downfield (higher = snappier).")]
     public float inAirCameraTurnSpeed = 5f;
-    [Tooltip("Part of the flight (0..1) during which the camera backs off to keep the whole arc in view. After it, the camera stays close on the WR (closing to In Air Cam Distance At Catch).")]
+    [Tooltip("The camera backs off to keep the ball in view at the throw, and lets that go smoothly as the flight goes on, fully by this part of the flight (0..1), ending at In Air Cam Distance At Catch on the WR. 1 = spread over the whole flight (one constant motion).")]
     [Range(0f, 1f)] public float inAirCamBallFrameUntil = 0.4f;
 
     [Tooltip("After the catch, the camera keeps the exact offset it has from the WR at its catch spot (the In Air Cam Distance At Catch view) and follows him with it.")]
@@ -151,6 +151,13 @@ public class QB : MonoBehaviour
             // Version 3 only zooms in a little (your other camera settings, e.g. Distance At Catch, are kept).
             inAirCamFieldOfView = 42f;
             inAirCamRaise = 0.75f;
+        }
+        if (inAirCamDefaultsVersion < 4)
+        {
+            // Version 4: closer as the ball arrives (one steady move in), more zoom. Your raise / distance at throw stay.
+            inAirCamFieldOfView = 34f;
+            inAirCamDistanceAtCatch = 2.2f;
+            inAirCamBallFrameUntil = 1f;
         }
         inAirCamDefaultsVersion = InAirCamDefaultsVersion;
     }
@@ -504,29 +511,23 @@ public class QB : MonoBehaviour
         focus += Vector3.up * (inAirCamAimHeight * unit);
         float range = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, eased) * unit;
 
-        // Back off (along the view) until the WR fits in the framing area, and, early in the flight, the ball too.
-        // Later in the flight the camera stays close on the WR, so the gap between the ball and his hands is easy to judge.
         // The camera sits inAirCamRaise receiver heights higher and still aims at the focus, so it looks down a bit more.
-        bool frameBall = progress < inAirCamBallFrameUntil;
+        // Two distances: one that keeps the WR in the framing area, one that keeps the ball in it too. The camera
+        // blends from the second to the first smoothly over the flight (fully by inAirCamBallFrameUntil), so it's one
+        // steady move in on the WR / the throw's target instead of backing off for a high ball and then jumping in.
+        float letGo = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(progress / Mathf.Max(0.01f, inAirCamBallFrameUntil)));
         float fieldOfView = inAirCamFieldOfView;
         float aspect = inAirCamera != null ? inAirCamera.aspect : 16f / 9f;
         float halfHeight = Mathf.Tan(fieldOfView * 0.5f * Mathf.Deg2Rad) * inAirCamFramingArea;
         float halfWidth = halfHeight * aspect;
         Vector3 raise = Vector3.up * (inAirCamRaise * unit);
+        float receiverRange = InAirCameraRange(focus, lookDirection, raise, range, false, ballPosition, receiverPoint, receiverSpot, halfWidth, halfHeight);
+        float ballRange = letGo < 1f
+            ? InAirCameraRange(focus, lookDirection, raise, receiverRange, true, ballPosition, receiverPoint, receiverSpot, halfWidth, halfHeight)
+            : receiverRange;
+        range = Mathf.Lerp(ballRange, receiverRange, letGo);
         Vector3 desiredPosition = focus - lookDirection * range + raise;
-        for (int i = 0; i < 40; i++)
-        {
-            desiredPosition = focus - lookDirection * range + raise;
-            viewRotation = Quaternion.LookRotation(focus - desiredPosition, Vector3.up);
-            Quaternion toView = Quaternion.Inverse(viewRotation);
-            if ((!frameBall || InAirCameraSees(toView, desiredPosition, ballPosition, halfWidth, halfHeight)) &&
-                InAirCameraSees(toView, desiredPosition, receiverPoint, halfWidth, halfHeight) &&
-                InAirCameraSees(toView, desiredPosition, receiverSpot, halfWidth, halfHeight))
-            {
-                break;
-            }
-            range *= 1.08f;
-        }
+        viewRotation = Quaternion.LookRotation(focus - desiredPosition, Vector3.up);
 
         // Follow relative to the WR: smooth the camera's offset from him, not its world position, so a fast WR
         // (and a ~1 s pass) never leaves the camera trailing behind.
@@ -539,6 +540,29 @@ public class QB : MonoBehaviour
         {
             inAirCamera.fieldOfView = Mathf.Lerp(inAirCamera.fieldOfView, fieldOfView, 1f - Mathf.Exp(-4f * Time.deltaTime));
         }
+    }
+
+    /// <summary>
+    /// Shortest distance (from startRange, growing 3% at a time) at which the camera, raised and aiming at the focus,
+    /// has the WR (shoulder and feet), and the ball if includeBall, inside the framing area.
+    /// </summary>
+    float InAirCameraRange(Vector3 focus, Vector3 lookDirection, Vector3 raise, float startRange, bool includeBall,
+        Vector3 ballPosition, Vector3 receiverPoint, Vector3 receiverSpot, float halfWidth, float halfHeight)
+    {
+        float range = startRange;
+        for (int i = 0; i < 120; i++)
+        {
+            Vector3 position = focus - lookDirection * range + raise;
+            Quaternion toView = Quaternion.Inverse(Quaternion.LookRotation(focus - position, Vector3.up));
+            if ((!includeBall || InAirCameraSees(toView, position, ballPosition, halfWidth, halfHeight)) &&
+                InAirCameraSees(toView, position, receiverPoint, halfWidth, halfHeight) &&
+                InAirCameraSees(toView, position, receiverSpot, halfWidth, halfHeight))
+            {
+                break;
+            }
+            range *= 1.03f;
+        }
+        return range;
     }
 
     /// <summary>
