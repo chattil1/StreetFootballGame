@@ -47,6 +47,20 @@ public class QB : MonoBehaviour
     public float afterCatchSettleTime = 0.3f;
     /// <summary>True while the QB's camera is following the WR after the catch (WR.cs then leaves the camera alone).</summary>
     public static bool CameraFollowingReceiver = false;
+
+    [Header("Pass Speed (real-world, scaled to the players' size)")]
+    [Tooltip("Ball speed off the QB's hand in mph. NFL passes leave the hand at roughly 50-60 mph; Madden's bullets look about the same.")]
+    public float passReleaseSpeedMph = 55f;
+    [Tooltip("Shortest flight time (s), so very short throws aren't instant.")]
+    public float minPassFlightTime = 0.3f;
+    [Tooltip("Real height (m) the players' models stand for (6'2\" = 1.88). Sets world units per meter for the ball's speed and gravity.")]
+    public float realPlayerHeightMeters = 1.88f;
+    [Tooltip("Players are ~35x scale, so normal gravity is far too weak for the ball too. On = the thrown ball falls with real gravity for that size.")]
+    public bool scaleBallGravityToPlayerSize = true;
+    [Tooltip("Off = the old fixed 4-second flight.")]
+    public bool useRealWorldPassSpeed = true;
+    /// <summary>Gravity multiplier on the ball in flight (world units per meter); WR's ball predictions use it too.</summary>
+    public static float BallGravityMultiplier = 1f;
     private Vector3 afterCatchOffsetVelocity = Vector3.zero;
     private Vector3 inAirCameraVelocity = Vector3.zero;
     private Vector3 inAirCameraThrowDirection = Vector3.zero;
@@ -550,6 +564,39 @@ public class QB : MonoBehaviour
         }
         CameraFollowingReceiver = true;
         return true;
+    }
+
+    /// <summary>
+    /// Flight time for a pass of this horizontal distance thrown at releaseSpeed under gravity g: the low (bullet)
+    /// arc, from (d/T)² + (gT/2)² = v². Past the ball's max range it uses the 45° time.
+    /// </summary>
+    float PassFlightTime(float distance, float releaseSpeed, float g)
+    {
+        if (releaseSpeed <= 0f || g <= 0f)
+        {
+            return 4f;
+        }
+        float v2 = releaseSpeed * releaseSpeed;
+        float disc = v2 * v2 - g * g * distance * distance;
+        float t2 = (v2 - Mathf.Sqrt(Mathf.Max(0f, disc))) / (0.5f * g * g);
+        return Mathf.Max(minPassFlightTime, Mathf.Sqrt(Mathf.Max(0f, t2)));
+    }
+
+    /// <summary>
+    /// The thrown ball's extra gravity (BallGravityMultiplier), so it falls like a real football at this scale.
+    /// The throw's velocities are worked out with the same gravity. Stops once it's caught (kinematic).
+    /// </summary>
+    private void FixedUpdate()
+    {
+        if (!thrown || parentFootballPosition == null || BallGravityMultiplier <= 1f)
+        {
+            return;
+        }
+        Rigidbody ballBody = parentFootballPosition.GetComponent<Rigidbody>();
+        if (ballBody != null && !ballBody.isKinematic && ballBody.useGravity)
+        {
+            ballBody.AddForce(Physics.gravity * (BallGravityMultiplier - 1f), ForceMode.Acceleration);
+        }
     }
 
     /// <summary>
@@ -1245,10 +1292,30 @@ public class QB : MonoBehaviour
             // The palm is where it will be once the catch aim has the left arm straight, pointing the way the WR's
             // stick (and L2) aim it, from the shoulder's normal position (GetLeftPalmCatchPosition), not wherever the
             // arm is at the moment of the throw (mid run swing, or still on its way into the catch).
-            timeToCatch = 4f;
             WR receiver = wrToUse.GetComponent<WR>();
             Vector3 receiverPalm = receiver.GetLeftPalmCatchPosition();
-            throwingTargetPosition = receiverPalm + (wrToUse.GetComponent<Rigidbody>().velocity * timeToCatch);
+            Vector3 receiverVelocity = wrToUse.GetComponent<Rigidbody>().velocity;
+            // Real-world pass: the ball leaves at passReleaseSpeedMph (in this scene's units) under real gravity for
+            // this size, so the flight time comes from the distance (a 30-yard throw is ~1.2 s, like Madden / the NFL)
+            // instead of always 4 s. The lead is solved with it: flight time to where the palm will be after that time.
+            float unitsPerMeter = receiver.GetUnitsPerMeter();
+            BallGravityMultiplier = scaleBallGravityToPlayerSize ? Mathf.Max(1f, unitsPerMeter) : 1f;
+            float ballGravity = Mathf.Abs(Physics.gravity.y) * BallGravityMultiplier;
+            if (useRealWorldPassSpeed)
+            {
+                float releaseSpeed = passReleaseSpeedMph * 0.44704f * unitsPerMeter;
+                timeToCatch = PassFlightTime(Vector3.ProjectOnPlane(receiverPalm - football.transform.position, Vector3.up).magnitude, releaseSpeed, ballGravity);
+                for (int i = 0; i < 4; i++)
+                {
+                    Vector3 ledPalm = receiverPalm + receiverVelocity * timeToCatch;
+                    timeToCatch = PassFlightTime(Vector3.ProjectOnPlane(ledPalm - football.transform.position, Vector3.up).magnitude, releaseSpeed, ballGravity);
+                }
+            }
+            else
+            {
+                timeToCatch = 4f;
+            }
+            throwingTargetPosition = receiverPalm + (receiverVelocity * timeToCatch);
             // Aim at the predicted palm itself. (The old half-hand-spacing offset along handForCatch.forward used the
             // hand's direction and spacing at release, which mid run swing point anywhere and pushed the aim off
             // by up to half an arm's length.)
@@ -1280,18 +1347,18 @@ public class QB : MonoBehaviour
 
             if (throwingTargetPosition.magnitude > 0)
             {
-                velY = ((0.5f * Mathf.Abs(Physics.gravity.y) * (timeToCatch * timeToCatch)) + (throwingTargetPosition.y - football.transform.position.y)) / (timeToCatch);
+                velY = ((0.5f * ballGravity * (timeToCatch * timeToCatch)) + (throwingTargetPosition.y - football.transform.position.y)) / (timeToCatch);
                 
 
             }
             else
             {
                 
-                velY = ((0.5f * Mathf.Abs(Physics.gravity.y) * (timeToCatch * timeToCatch)) + (handForCatch.position.y - football.transform.position.y)) / (timeToCatch);
+                velY = ((0.5f * ballGravity * (timeToCatch * timeToCatch)) + (handForCatch.position.y - football.transform.position.y)) / (timeToCatch);
             }
 
             //expectedWRPosition = PredictFuturePosition(timeToCatch, wrX.GetComponent<Rigidbody>());
-            float velYCamera = ((0.5f * Mathf.Abs(Physics.gravity.y) * (timeToCatch * timeToCatch)) + ((tDest.y - mainCamera.transform.position.y))) / (timeToCatch);
+            float velYCamera = ((0.5f * ballGravity * (timeToCatch * timeToCatch)) + ((tDest.y - mainCamera.transform.position.y))) / (timeToCatch);
             launchVelY = velY;
             float threeDimVelMagnitude = Mathf.Sqrt((velXZ * velXZ) + (velY * velY));
             launchAngle = Mathf.Asin(velY / threeDimVelMagnitude) * Mathf.Rad2Deg;
@@ -1300,7 +1367,7 @@ public class QB : MonoBehaviour
 
             //NEEDED FOR ENLARGED GRAVITY SOLUTION
             //Tuple<float, float> roots = SolveQuadratic(4.9f * (22200 / 5f), -velY, -football.transform.position.y);
-            Tuple<float, float> roots = SolveQuadratic(4.9f, -velY, -football.transform.position.y);
+            Tuple<float, float> roots = SolveQuadratic(0.5f * ballGravity, -velY, -football.transform.position.y);
 
 
 
@@ -1418,7 +1485,7 @@ public class QB : MonoBehaviour
                 float stepTimePassed = stepTime * i;
                 Vector3 movementVector = new Vector3(
                     velX * stepTimePassed,
-                    velY * stepTimePassed - 0.5f * Mathf.Abs(Physics.gravity.y) * stepTimePassed * stepTimePassed,
+                    velY * stepTimePassed - 0.5f * ballGravity * stepTimePassed * stepTimePassed,
                     velZ * stepTimePassed);
                 if (i == ((lineCount / 2) - 1))
                 {

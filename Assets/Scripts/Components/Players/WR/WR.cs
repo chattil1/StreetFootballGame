@@ -88,6 +88,15 @@ public class WR : MonoBehaviour
     public float realPlayerHeightMeters = 1.88f;
     private float playerHeightUnits = 0f;
 
+    [Header("Run Speed (real-world, scaled to the player's size)")]
+    [Tooltip("Top run speed in mph, like Madden / NFL Next Gen Stats: ~21 mph is a fast WR (the fastest top out near 22-23).")]
+    public float topSpeedMph = 21f;
+    [Tooltip("Off = keep the old fixed run speed (100 units/s).")]
+    public bool useRealWorldRunSpeed = true;
+    private bool runSpeedScaled = false;
+    [Tooltip("Seconds after the ball's planned arrival before an uncaught pass ends the WR's run (the catch window).")]
+    public float catchWindowGrace = 0.75f;
+
     [Header("Catch Assist (while the ball is in the air)")]
     [Tooltip("Most the left arm's aim is pulled from the stick target towards the ball (0..1).")]
     [Range(0f, 1f)] public float aimAssistMaxWeight = 0.5f;
@@ -1812,13 +1821,14 @@ public class WR : MonoBehaviour
     }
     private void FixedUpdate()
     {
+        ScaleRunSpeedToPlayerSize();
         ApplyScaledAirGravity();
         CatchSweep();
         GameObject football = QB.GetComponent<QB>().GetFootball();
         Vector3 twistDir = new Vector3(football.transform.position.x, 0f, football.transform.position.z);
         // The play's catch window (time to catch after the throw) only stops the WR while the ball isn't caught;
         // once he has it he can run after the catch for as long as he likes.
-        bool timeOver = caughtFootball == null && QB.GetComponent<QB>().GetIsThrown() && ((Time.time - QB.GetComponent<QB>().GetTimeThrown()) >= QB.GetComponent<QB>().GetTimeToCatch()) ? true : false;
+        bool timeOver = caughtFootball == null && QB.GetComponent<QB>().GetIsThrown() && ((Time.time - QB.GetComponent<QB>().GetTimeThrown()) >= QB.GetComponent<QB>().GetTimeToCatch() + catchWindowGrace) ? true : false;
         Rigidbody rb = gameObject.GetComponent<Rigidbody>();
         float xValue = Mathf.Abs(rb.gameObject.transform.forward.x) > 0.01f ? rb.gameObject.transform.forward.x : 0f;
         float zValue = Mathf.Abs(rb.gameObject.transform.forward.z) > 0.01f ? rb.gameObject.transform.forward.z : 0f;
@@ -1910,13 +1920,47 @@ public class WR : MonoBehaviour
         {
             return;
         }
+        float multiplier = Mathf.Max(1f, GetUnitsPerMeter());
+        rb.AddForce(Physics.gravity * (multiplier - 1f), ForceMode.Acceleration);
+    }
+
+    /// <summary>
+    /// The WR's height in world units (measured once UMA has built him; 1.8 x his scale until then).
+    /// </summary>
+    public float GetPlayerHeightUnits()
+    {
         if (playerHeightUnits <= 0f && GetComponentInChildren<SkinnedMeshRenderer>() != null)
         {
             playerHeightUnits = global::QB.MeasurePlayerHeight(gameObject); // once UMA has built him
         }
-        float height = playerHeightUnits > 0f ? playerHeightUnits : 1.8f * Mathf.Abs(transform.lossyScale.y);
-        float multiplier = Mathf.Max(1f, height / Mathf.Max(0.1f, realPlayerHeightMeters));
-        rb.AddForce(Physics.gravity * (multiplier - 1f), ForceMode.Acceleration);
+        return playerHeightUnits > 0f ? playerHeightUnits : 1.8f * Mathf.Abs(transform.lossyScale.y);
+    }
+
+    /// <summary>
+    /// World units per real meter: his height in units / realPlayerHeightMeters (~33.5 for a 63-unit WR at 6'2").
+    /// </summary>
+    public float GetUnitsPerMeter()
+    {
+        return GetPlayerHeightUnits() / Mathf.Max(0.1f, realPlayerHeightMeters);
+    }
+
+    /// <summary>
+    /// Once his real height is known, sets the top run speed to topSpeedMph in real terms (mph -> m/s -> units/s)
+    /// and scales the run acceleration by the same factor, so he reaches top speed in the same time as before.
+    /// </summary>
+    void ScaleRunSpeedToPlayerSize()
+    {
+        if (runSpeedScaled || !useRealWorldRunSpeed || GetComponentInChildren<SkinnedMeshRenderer>() == null)
+        {
+            return;
+        }
+        runSpeedScaled = true;
+        float newSpeed = topSpeedMph * 0.44704f * GetUnitsPerMeter();
+        if (newSpeed > 0f && targetSpeed > 0f)
+        {
+            runAcceleration *= newSpeed / targetSpeed;
+            targetSpeed = newSpeed;
+        }
     }
 
     /// <summary>
@@ -1986,7 +2030,7 @@ public class WR : MonoBehaviour
         float step = Time.fixedDeltaTime;
         Rigidbody wrBody = GetComponent<Rigidbody>();
         Vector3 wrVelocity = wrBody != null ? wrBody.velocity : Vector3.zero;
-        Vector3 ballVelocity = ball.velocity + (ball.useGravity ? Physics.gravity * step : Vector3.zero);
+        Vector3 ballVelocity = ball.velocity + (ball.useGravity ? Physics.gravity * global::QB.BallGravityMultiplier * step : Vector3.zero);
         Vector3 from = ball.position + ballCenterOffset;
         Vector3 relativeMove = (ballVelocity - wrVelocity) * step;
 
@@ -2058,7 +2102,7 @@ public class WR : MonoBehaviour
         predictedBallPathStep = step;
         Vector3 position = ball.position;
         Vector3 velocity = ball.velocity;
-        Vector3 gravity = ball.useGravity ? Physics.gravity : Vector3.zero;
+        Vector3 gravity = ball.useGravity ? Physics.gravity * global::QB.BallGravityMultiplier : Vector3.zero;
         int steps = Mathf.CeilToInt(ballPredictionTime / step);
         predictedBallPath.Add(position);
         for (int i = 0; i < steps; i++)
