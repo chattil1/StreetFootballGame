@@ -91,9 +91,13 @@ public class WR : MonoBehaviour
     [Header("Run Speed (real-world, scaled to the player's size)")]
     [Tooltip("Top run speed in mph, like Madden / NFL Next Gen Stats: ~21 mph is a fast WR (the fastest top out near 22-23).")]
     public float topSpeedMph = 21f;
-    [Tooltip("Off = keep the old fixed run speed (100 units/s).")]
+    [Tooltip("Speeds up (>1) or slows down (<1) his run. Top speed = Top Speed Mph x this. Works live in Play mode.")]
+    [Range(0.25f, 2f)] public float runSpeedMultiplier = 0.9f;
+    [Tooltip("How fast he gains speed, in mph per second (scaled to the player's size). Lower = takes longer to reach top speed. " +
+        "NFL players take roughly 2 s to get near top speed (about 10 mph/s); time to top speed = top speed / this.")]
+    public float runAccelerationMphPerSecond = 10f;
+    [Tooltip("Off = keep the old fixed run speed (100 units/s) and acceleration.")]
     public bool useRealWorldRunSpeed = true;
-    private bool runSpeedScaled = false;
     [Tooltip("Seconds after the ball's planned arrival before an uncaught pass ends the WR's run (the catch window).")]
     public float catchWindowGrace = 0.75f;
 
@@ -1947,22 +1951,41 @@ public class WR : MonoBehaviour
     }
 
     /// <summary>
-    /// Once his real height is known, sets the top run speed to topSpeedMph in real terms (mph -> m/s -> units/s)
-    /// and scales the run acceleration by the same factor, so he reaches top speed in the same time as before.
+    /// Once his real height is known, sets his top run speed (topSpeedMph x runSpeedMultiplier) and acceleration
+    /// (runAccelerationMphPerSecond) in real terms (mph -> m/s -> units/s). Done every physics step, so changing them
+    /// in the Inspector during Play mode works right away.
     /// </summary>
     void ScaleRunSpeedToPlayerSize()
     {
-        if (runSpeedScaled || !useRealWorldRunSpeed || GetComponentInChildren<SkinnedMeshRenderer>() == null)
+        if (!useRealWorldRunSpeed || GetComponentInChildren<SkinnedMeshRenderer>() == null)
         {
             return;
         }
-        runSpeedScaled = true;
-        float newSpeed = topSpeedMph * 0.44704f * GetUnitsPerMeter();
-        if (newSpeed > 0f && targetSpeed > 0f)
+        float mphToUnits = 0.44704f * GetUnitsPerMeter();
+        targetSpeed = Mathf.Max(0.01f, topSpeedMph * runSpeedMultiplier * mphToUnits);
+        runAcceleration = Mathf.Max(0.01f, runAccelerationMphPerSecond * mphToUnits);
+    }
+
+    /// <summary>
+    /// Where his body will have moved (horizontally) after the given seconds, if he keeps doing what he's doing:
+    /// still accelerating up to top speed along his run if he's running and not there yet, else his current velocity.
+    /// The QB uses it to lead the throw (so a WR who is still speeding up isn't under-led).
+    /// </summary>
+    public Vector3 PredictRunDisplacement(float seconds)
+    {
+        Rigidbody body = GetComponent<Rigidbody>();
+        Vector3 velocity = body != null ? Vector3.ProjectOnPlane(body.velocity, Vector3.up) : Vector3.zero;
+        float speed = velocity.magnitude;
+        Vector2 stick = playerInput != null ? playerInput.actions["Catch"].ReadValue<Vector2>() : Vector2.zero;
+        bool running = rTriggerPressed && stick.magnitude > 0f;
+        if (!running || speed >= targetSpeed || runAcceleration <= 0f)
         {
-            runAcceleration *= newSpeed / targetSpeed;
-            targetSpeed = newSpeed;
+            return velocity * seconds;
         }
+        Vector3 direction = speed > 1e-3f ? velocity / speed : Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
+        float accelTime = Mathf.Min(seconds, (targetSpeed - speed) / runAcceleration);
+        float distance = speed * accelTime + 0.5f * runAcceleration * accelTime * accelTime + targetSpeed * (seconds - accelTime);
+        return direction * distance;
     }
 
     /// <summary>

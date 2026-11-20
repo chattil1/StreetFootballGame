@@ -55,8 +55,13 @@ public class QB : MonoBehaviour
     public static bool CameraFollowingReceiver = false;
 
     [Header("Pass Speed (real-world, scaled to the players' size)")]
-    [Tooltip("Ball speed off the QB's hand in mph. NFL passes leave the hand at roughly 50-60 mph; Madden's bullets look about the same.")]
-    public float passReleaseSpeedMph = 55f;
+    [Tooltip("Air time of a pass = Pass Air Time Base + Pass Air Time Per Yard x the throw's distance in yards (QB to where the receiver will be), " +
+        "divided by Pass Speed Multiplier. Defaults: 10 yd ~0.7 s, 20 yd ~1.15 s, 40 yd ~2.05 s, 60 yd ~2.95 s, roughly Madden's.")]
+    public float passAirTimeBase = 0.25f;
+    [Tooltip("Seconds of air time added per yard of throw distance.")]
+    public float passAirTimePerYard = 0.045f;
+    [Tooltip("Speeds up (>1) or slows down (<1) every pass (divides the air time). Works live in Play mode.")]
+    [Range(0.25f, 2f)] public float passSpeedMultiplier = 1f;
     [Tooltip("Shortest flight time (s), so very short throws aren't instant.")]
     public float minPassFlightTime = 0.3f;
     [Tooltip("Real height (m) the players' models stand for (6'2\" = 1.88). Sets world units per meter for the ball's speed and gravity.")]
@@ -613,19 +618,12 @@ public class QB : MonoBehaviour
     }
 
     /// <summary>
-    /// Flight time for a pass of this horizontal distance thrown at releaseSpeed under gravity g: the low (bullet)
-    /// arc, from (d/T)² + (gT/2)² = v². Past the ball's max range it uses the 45° time.
+    /// Air time for a pass of this many yards: passAirTimeBase + passAirTimePerYard x yards, / passSpeedMultiplier.
     /// </summary>
-    float PassFlightTime(float distance, float releaseSpeed, float g)
+    float PassAirTime(float yards)
     {
-        if (releaseSpeed <= 0f || g <= 0f)
-        {
-            return 4f;
-        }
-        float v2 = releaseSpeed * releaseSpeed;
-        float disc = v2 * v2 - g * g * distance * distance;
-        float t2 = (v2 - Mathf.Sqrt(Mathf.Max(0f, disc))) / (0.5f * g * g);
-        return Mathf.Max(minPassFlightTime, Mathf.Sqrt(Mathf.Max(0f, t2)));
+        float seconds = (passAirTimeBase + passAirTimePerYard * Mathf.Max(0f, yards)) / Mathf.Max(0.05f, passSpeedMultiplier);
+        return Mathf.Max(minPassFlightTime, seconds);
     }
 
     /// <summary>
@@ -1415,24 +1413,26 @@ public class QB : MonoBehaviour
             WR receiver = wrToUse.GetComponent<WR>();
             Vector3 receiverPalm = receiver.GetLeftPalmCatchPosition();
             Vector3 receiverVelocity = wrToUse.GetComponent<Rigidbody>().velocity;
-            // Real-world pass: the ball leaves at passReleaseSpeedMph (in this scene's units) under real gravity for
-            // this size, so the flight time comes from the distance (a 30-yard throw is ~1.2 s, like Madden / the NFL)
-            // instead of always 4 s. The lead is solved with it: flight time to where the palm will be after that time.
+            // Madden-style pass: the air time grows with the throw's distance (QB to where the receiver's catch palm
+            // will be), passAirTimeBase + passAirTimePerYard x yards, / passSpeedMultiplier, and the ball flies under
+            // real gravity for this size, so short throws are quick and flat and deep balls take longer and arc higher.
+            // The lead is solved with it: where his palm will be after the air time, including him still speeding up.
             float unitsPerMeter = receiver.GetUnitsPerMeter();
+            float unitsPerYard = unitsPerMeter * 0.9144f;
             BallGravityMultiplier = scaleBallGravityToPlayerSize ? Mathf.Max(1f, unitsPerMeter) : 1f;
             float ballGravity = Mathf.Abs(Physics.gravity.y) * BallGravityMultiplier;
             receiverVelocity = Vector3.ProjectOnPlane(receiverVelocity, Vector3.up);
             float fixedStep = Time.fixedDeltaTime;
             // The impulse only takes effect at the next physics step, but the receiver keeps running until then.
             float releaseDelay = Mathf.Clamp(Time.fixedTime + fixedStep - Time.time, 0f, fixedStep);
+            Vector3 ledPalm = receiverPalm;
             if (useRealWorldPassSpeed)
             {
-                float releaseSpeed = passReleaseSpeedMph * 0.44704f * unitsPerMeter;
-                timeToCatch = PassFlightTime(Vector3.ProjectOnPlane(receiverPalm - football.transform.position, Vector3.up).magnitude, releaseSpeed, ballGravity);
-                for (int i = 0; i < 6; i++)
+                timeToCatch = PassAirTime(Vector3.ProjectOnPlane(receiverPalm - football.transform.position, Vector3.up).magnitude / unitsPerYard);
+                for (int i = 0; i < 8; i++)
                 {
-                    Vector3 ledPalm = receiverPalm + receiverVelocity * (releaseDelay + timeToCatch);
-                    timeToCatch = PassFlightTime(Vector3.ProjectOnPlane(ledPalm - football.transform.position, Vector3.up).magnitude, releaseSpeed, ballGravity);
+                    ledPalm = receiverPalm + receiver.PredictRunDisplacement(releaseDelay + timeToCatch);
+                    timeToCatch = PassAirTime(Vector3.ProjectOnPlane(ledPalm - football.transform.position, Vector3.up).magnitude / unitsPerYard);
                 }
             }
             else
@@ -1441,7 +1441,7 @@ public class QB : MonoBehaviour
             }
             // Whole physics steps, so the ball is exactly at the target on a step (not between two).
             timeToCatch = Mathf.Max(1, Mathf.Round(timeToCatch / fixedStep)) * fixedStep;
-            throwingTargetPosition = receiverPalm + (receiverVelocity * (releaseDelay + timeToCatch));
+            throwingTargetPosition = receiverPalm + receiver.PredictRunDisplacement(releaseDelay + timeToCatch);
             // Aim at the predicted palm itself. (The old half-hand-spacing offset along handForCatch.forward used the
             // hand's direction and spacing at release, which mid run swing point anywhere and pushed the aim off
             // by up to half an arm's length.)
