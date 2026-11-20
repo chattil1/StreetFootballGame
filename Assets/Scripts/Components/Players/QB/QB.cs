@@ -617,6 +617,29 @@ public class QB : MonoBehaviour
     }
 
     /// <summary>
+    /// The thrown-ball prefab (ParentPosition, with the Rigidbody and TestCollision). If the Inspector field is empty,
+    /// was destroyed, or points at an object in the scene instead of the prefab asset (a scene copy is destroyed /
+    /// reused, which gives "parentFootballPositionPrefab doesn't exist anymore"), it uses
+    /// Assets/Resources/Prefabs/ParentPosition.prefab instead and says so once in the Console.
+    /// </summary>
+    GameObject GetFootballPrefab()
+    {
+        bool usable = parentFootballPositionPrefab != null && !parentFootballPositionPrefab.scene.IsValid()
+            && parentFootballPositionPrefab.GetComponent<Rigidbody>() != null && parentFootballPositionPrefab.GetComponent<TestCollision>() != null;
+        if (!usable)
+        {
+            GameObject fallback = Resources.Load<GameObject>("Prefabs/ParentPosition");
+            if (fallback != null)
+            {
+                Debug.LogWarning("QB: Parent Football Position Prefab is missing or isn't the prefab asset (it must be Assets/Resources/Prefabs/ParentPosition, " +
+                    "not an object in the scene). Using Resources/Prefabs/ParentPosition for throws. Drag that prefab from the Project window into the field to fix it.");
+                parentFootballPositionPrefab = fallback;
+            }
+        }
+        return parentFootballPositionPrefab;
+    }
+
+    /// <summary>
     /// The throw started: remember the camera's view now, so it can blend from it to the in-air camera's starting
     /// view over the throw animation (UpdateThrowWindupCamera).
     /// </summary>
@@ -1181,7 +1204,9 @@ public class QB : MonoBehaviour
         {
             if ((Time.time - timeThrown) <= timeToCatch && cameraSetForLaunch)
             {
-                Vector2 horVec = new Vector2(football.transform.parent.gameObject.GetComponent<Rigidbody>().velocity.x, football.transform.parent.gameObject.GetComponent<Rigidbody>().velocity.z);
+                Rigidbody flightBody = football.transform.parent != null ? football.transform.parent.GetComponent<Rigidbody>() : null;
+                Vector3 flightVelocity = flightBody != null ? flightBody.velocity : Vector3.zero;
+                Vector2 horVec = new Vector2(flightVelocity.x, flightVelocity.z);
                 float velMag = Mathf.Sqrt((horVec.x * horVec.x) + (horVec.y * horVec.y));
                 Debug.DrawRay(throwingTargetPosition, Vector3.up * 1000f, Color.green);
                 //Debug.DrawRay(wrToUse.GetComponent<WR>().GetLeftHand().position, Vector3.up * 1000f, Color.red);
@@ -1692,7 +1717,7 @@ public class QB : MonoBehaviour
             //timeOfFlight = velY / ((0.5f) * Mathf.Abs(Physics.gravity.y));
             float direction = -Mathf.Atan(velZ / velX) * Mathf.Rad2Deg;
             setPositionForFirstTime = true;
-            parentFootballPosition = Instantiate<GameObject>(parentFootballPositionPrefab);
+            parentFootballPosition = Instantiate<GameObject>(GetFootballPrefab());
             if (throwBPerformed)
             {
                 parentFootballPosition.GetComponent<TestCollision>().wr1Hand = parentFootballPosition.GetComponent<TestCollision>().leftArm = wrB.transform.Find("Root").GetChild(0).GetChild(0).GetChild(0).GetChild(0).GetChild(1).GetChild(0).GetChild(5).GetChild(2).GetChild(0).GetChild(0);
