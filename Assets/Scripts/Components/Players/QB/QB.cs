@@ -58,6 +58,16 @@ public class QB : MonoBehaviour
     public bool followReceiverAfterCatch = true;
     [Tooltip("Seconds the camera takes to settle into its catch-spot offset from the WR after the catch (from then on it moves exactly with him).")]
     public float afterCatchSettleTime = 0.3f;
+    [Tooltip("Seconds the camera takes to move from where it is when the throw starts to the in-air camera's starting view " +
+        "(Distance / Raise At Throw), during the throw animation. 0 = in sync with the throw animation, arriving exactly when its ReleaseFootball event fires.")]
+    public float throwCameraTransitionTime = 0f;
+    bool throwCameraWindupActive = false;
+    float throwCameraWindupStartTime;
+    Vector3 throwCameraStartPosition;
+    Quaternion throwCameraStartRotation;
+    float throwCameraStartFieldOfView;
+    AnimationClip releaseFootballClip;
+    float releaseFootballEventTime = -1f;
     /// <summary>True while the QB's camera is following the WR after the catch (WR.cs then leaves the camera alone).</summary>
     public static bool CameraFollowingReceiver = false;
 
@@ -490,6 +500,11 @@ public class QB : MonoBehaviour
     void UpdateInAirCamera()
     {
         CameraFollowingReceiver = false;
+        if (useBroadcastInAirCamera && !thrown && throwCameraWindupActive && mainCamera != null && football != null)
+        {
+            UpdateThrowWindupCamera();
+            return;
+        }
         if (!useBroadcastInAirCamera || !thrown || mainCamera == null || football == null)
         {
             return;
@@ -510,17 +525,42 @@ public class QB : MonoBehaviour
         {
             return;
         }
-        WR receiver = receiverObject.GetComponent<WR>();
         Camera inAirCamera = mainCamera.GetComponent<Camera>();
         Transform cameraTransform = mainCamera.transform;
+        float progress = timeToCatch > 0f ? Mathf.Clamp01((Time.time - timeThrown) / timeToCatch) : 1f;
+        float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
+        ComputeInAirCameraPose(receiverObject, football.transform.position, progress, unit, inAirCamera,
+            out Vector3 desiredPosition, out Quaternion viewRotation, out Vector3 receiverSpot);
+        float fieldOfView = inAirCamFieldOfView;
+
+        // Follow relative to the WR: smooth the camera's offset from him, not its world position, so a fast WR
+        // (and a ~1 s pass) never leaves the camera trailing behind.
+        Vector3 currentOffset = cameraTransform.position - receiverSpot;
+        Vector3 offset = Vector3.SmoothDamp(currentOffset, desiredPosition - receiverSpot, ref inAirCameraVelocity, Mathf.Max(0.01f, inAirCameraPositionSmoothTime));
+        cameraTransform.position = receiverSpot + offset;
+        float turn = 1f - Mathf.Exp(-inAirCameraTurnSpeed * Time.deltaTime);
+        cameraTransform.rotation = Quaternion.Slerp(cameraTransform.rotation, viewRotation, turn);
+        if (inAirCamera != null)
+        {
+            inAirCamera.fieldOfView = Mathf.Lerp(inAirCamera.fieldOfView, fieldOfView, 1f - Mathf.Exp(-4f * Time.deltaTime));
+        }
+    }
+
+    /// <summary>
+    /// Where the in-air camera should be (and how it should face) at this point of the flight (progress 0 = release,
+    /// 1 = the ball reaching the WR), for this ball position. Used during the flight, and before it, as the target of
+    /// the throw wind-up transition (progress 0 with the ball still in the QB's hand).
+    /// </summary>
+    void ComputeInAirCameraPose(GameObject receiverObject, Vector3 ballPosition, float progress, float unit, Camera inAirCamera,
+        out Vector3 desiredPosition, out Quaternion viewRotation, out Vector3 receiverSpot)
+    {
+        WR receiver = receiverObject.GetComponent<WR>();
 
         float groundHeight = receiverObject.transform.position.y;
-        Vector3 ballPosition = football.transform.position;
         Vector3 receiverPoint = receiver != null ? receiver.GetLeftShoulderPosition() : receiverObject.transform.position;
         Vector3 ballSpot = new Vector3(ballPosition.x, groundHeight, ballPosition.z);
-        Vector3 receiverSpot = new Vector3(receiverObject.transform.position.x, groundHeight, receiverObject.transform.position.z);
+        receiverSpot = new Vector3(receiverObject.transform.position.x, groundHeight, receiverObject.transform.position.z);
 
-        float progress = timeToCatch > 0f ? Mathf.Clamp01((Time.time - timeThrown) / timeToCatch) : 1f;
         float eased = Mathf.SmoothStep(0f, 1f, progress);
         Vector3 focus = Vector3.Lerp(ballSpot, receiverSpot, Mathf.Lerp(inAirCamCenterAtThrow, inAirCamCenterAtCatch, eased));
 
@@ -529,9 +569,7 @@ public class QB : MonoBehaviour
         Vector3 cameraRight = Vector3.Cross(Vector3.up, downfield);
         float pitch = Mathf.Clamp(inAirCamTilt, 2f, 85f);
         Vector3 lookDirection = Quaternion.AngleAxis(pitch, cameraRight) * downfield;
-        Quaternion viewRotation = Quaternion.LookRotation(lookDirection, Vector3.up);
 
-        float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
         // Aim at about chest height above the focus spot. Distance: normally Distance At Throw -> At Catch over the
         // flight; Max Distance At Throw (also easing to At Catch) is the most it may back off when the ball needs it.
         focus += Vector3.up * (inAirCamAimHeight * unit);
@@ -573,19 +611,122 @@ public class QB : MonoBehaviour
             }
         }
         range = Mathf.Lerp(ballRange, receiverRange, letGo);
-        Vector3 desiredPosition = focus - lookDirection * range + raise;
+        desiredPosition = focus - lookDirection * range + raise;
         viewRotation = Quaternion.LookRotation(focus - desiredPosition, Vector3.up);
 
-        // Follow relative to the WR: smooth the camera's offset from him, not its world position, so a fast WR
-        // (and a ~1 s pass) never leaves the camera trailing behind.
-        Vector3 currentOffset = cameraTransform.position - receiverSpot;
-        Vector3 offset = Vector3.SmoothDamp(currentOffset, desiredPosition - receiverSpot, ref inAirCameraVelocity, Mathf.Max(0.01f, inAirCameraPositionSmoothTime));
-        cameraTransform.position = receiverSpot + offset;
-        float turn = 1f - Mathf.Exp(-inAirCameraTurnSpeed * Time.deltaTime);
-        cameraTransform.rotation = Quaternion.Slerp(cameraTransform.rotation, viewRotation, turn);
-        if (inAirCamera != null)
+    }
+
+    /// <summary>
+    /// The throw started: remember the camera's view now, so it can blend from it to the in-air camera's starting
+    /// view over the throw animation (UpdateThrowWindupCamera).
+    /// </summary>
+    void StartThrowCameraWindup()
+    {
+        if (!useBroadcastInAirCamera || thrown || mainCamera == null)
         {
-            inAirCamera.fieldOfView = Mathf.Lerp(inAirCamera.fieldOfView, fieldOfView, 1f - Mathf.Exp(-4f * Time.deltaTime));
+            return;
+        }
+        GameObject receiverObject = throwBPerformed ? wrB : wrX;
+        if (receiverObject == null)
+        {
+            return;
+        }
+        Camera cam = mainCamera.GetComponent<Camera>();
+        throwCameraWindupActive = true;
+        throwCameraWindupStartTime = Time.time;
+        throwCameraStartPosition = mainCamera.transform.position;
+        throwCameraStartRotation = mainCamera.transform.rotation;
+        throwCameraStartFieldOfView = cam != null ? cam.fieldOfView : inAirCamFieldOfView;
+        // The same downfield direction and size unit ReleaseFootball will use.
+        inAirCameraDownfield = transform.forward.z >= 0f ? Vector3.forward : Vector3.back;
+        inAirCameraUnit = MeasurePlayerHeight(receiverObject);
+        FindReleaseFootballEvent();
+    }
+
+    /// <summary>
+    /// Finds the throw animation clip with the ReleaseFootball event and the event's time in it.
+    /// </summary>
+    void FindReleaseFootballEvent()
+    {
+        if (releaseFootballClip != null || playerAnimator == null || playerAnimator.runtimeAnimatorController == null)
+        {
+            return;
+        }
+        foreach (AnimationClip clip in playerAnimator.runtimeAnimatorController.animationClips)
+        {
+            if (clip == null)
+            {
+                continue;
+            }
+            foreach (AnimationEvent animationEvent in clip.events)
+            {
+                if (animationEvent.functionName == "ReleaseFootball")
+                {
+                    releaseFootballClip = clip;
+                    releaseFootballEventTime = animationEvent.time;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 0..1: how far the throw animation is towards its ReleaseFootball event (or, with throwCameraTransitionTime
+    /// set, how much of that time has passed since the throw started).
+    /// </summary>
+    float ThrowWindupProgress()
+    {
+        if (throwCameraTransitionTime > 0f || releaseFootballClip == null || releaseFootballEventTime <= 0f)
+        {
+            float seconds = throwCameraTransitionTime > 0f ? throwCameraTransitionTime : 0.667f;
+            return Mathf.Clamp01((Time.time - throwCameraWindupStartTime) / seconds);
+        }
+        // The throw state may still be blending in (next state) or playing (current state).
+        if (playerAnimator.IsInTransition(0))
+        {
+            foreach (AnimatorClipInfo info in playerAnimator.GetNextAnimatorClipInfo(0))
+            {
+                if (info.clip == releaseFootballClip)
+                {
+                    float time = playerAnimator.GetNextAnimatorStateInfo(0).normalizedTime * releaseFootballClip.length;
+                    return Mathf.Clamp01(time / releaseFootballEventTime);
+                }
+            }
+        }
+        foreach (AnimatorClipInfo info in playerAnimator.GetCurrentAnimatorClipInfo(0))
+        {
+            if (info.clip == releaseFootballClip)
+            {
+                float time = playerAnimator.GetCurrentAnimatorStateInfo(0).normalizedTime * releaseFootballClip.length;
+                return Mathf.Clamp01(time / releaseFootballEventTime);
+            }
+        }
+        return 0f; // the throw animation hasn't started yet
+    }
+
+    /// <summary>
+    /// During the throw animation: blend the camera from its view when the throw started to the in-air camera's view
+    /// at release (Distance / Raise At Throw, aimed downfield at the ball and WR), arriving as ReleaseFootball fires,
+    /// so the in-air camera picks up from exactly there.
+    /// </summary>
+    void UpdateThrowWindupCamera()
+    {
+        GameObject receiverObject = throwBPerformed ? wrB : wrX;
+        if (receiverObject == null)
+        {
+            throwCameraWindupActive = false;
+            return;
+        }
+        Camera cam = mainCamera.GetComponent<Camera>();
+        float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
+        ComputeInAirCameraPose(receiverObject, football.transform.position, 0f, unit, cam,
+            out Vector3 launchPosition, out Quaternion launchRotation, out Vector3 receiverSpot);
+        float blend = Mathf.SmoothStep(0f, 1f, ThrowWindupProgress());
+        mainCamera.transform.position = Vector3.Lerp(throwCameraStartPosition, launchPosition, blend);
+        mainCamera.transform.rotation = Quaternion.Slerp(throwCameraStartRotation, launchRotation, blend);
+        if (cam != null)
+        {
+            cam.fieldOfView = Mathf.Lerp(throwCameraStartFieldOfView, inAirCamFieldOfView, blend);
         }
     }
 
@@ -1267,6 +1408,7 @@ public class QB : MonoBehaviour
         timeThrowStarted = Time.time;
         timeOfPreviousThrowFrame = Time.time;
         positionOfCameraWhenStartingThrow = mainCamera.transform.position;
+        StartThrowCameraWindup();
         //cameraDestinationDirection = wrX.transform.position + new Vector3(0, -7f, 9f);
 
     }
@@ -1280,6 +1422,7 @@ public class QB : MonoBehaviour
         timeThrowStarted = Time.time;
         timeOfPreviousThrowFrame = Time.time;
         positionOfCameraWhenStartingThrow = mainCamera.transform.position;
+        StartThrowCameraWindup();
         //cameraDestinationDirection = wrX.transform.position + new Vector3(0, -7f, 9f);
 
     }
@@ -1493,6 +1636,7 @@ public class QB : MonoBehaviour
             inAirCameraDownfield = transform.forward.z >= 0f ? Vector3.forward : Vector3.back;
             inAirCameraUnit = MeasurePlayerHeight(wrToUse.gameObject);
             inAirCameraVelocity = Vector3.zero;
+            throwCameraWindupActive = false;
             if (throwingTargetPosition.magnitude > 0) {
                 forceVectorFootball = throwingTargetPosition - football.transform.position;
                 //forceVectorFinal = new Vector3(forceVectorFootball.x, handForCatch.position.y, forceVectorFootball.z);
