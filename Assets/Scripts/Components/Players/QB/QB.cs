@@ -41,6 +41,10 @@ public class QB : MonoBehaviour
     public float inAirCameraPositionSmoothTime = 0.3f;
     [Tooltip("How quickly the camera turns to face downfield (higher = snappier).")]
     public float inAirCameraTurnSpeed = 5f;
+    [Tooltip("Part of the flight (0..1) during which the camera backs off to keep the whole arc in view. After it, the camera stays close on the WR (closing to In Air Cam Distance At Catch) and only tilts up to show the ball coming down.")]
+    [Range(0f, 1f)] public float inAirCamBallFrameUntil = 0.4f;
+    [Tooltip("Most the camera tilts up (degrees, from its normal tilt) to keep the descending ball in view while staying close on the WR.")]
+    public float inAirCamMaxTiltUp = 25f;
     [Tooltip("After the catch, the camera keeps the exact offset it has from the WR at its catch spot (the In Air Cam Distance At Catch view) and follows him with it.")]
     public bool followReceiverAfterCatch = true;
     [Tooltip("Seconds the camera takes to settle into its catch-spot offset from the WR after the catch (from then on it moves exactly with him).")]
@@ -493,7 +497,10 @@ public class QB : MonoBehaviour
         focus += Vector3.up * (inAirCamAimHeight * unit);
         float range = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, eased) * unit;
 
-        // Back off (along the view) until the ball and the WR fit in the framing area.
+        // Back off (along the view) until the WR fits in the framing area, and, early in the flight, the ball too.
+        // Later in the flight the camera stays close on the WR (so the gap between the ball and his hands is easy to
+        // judge) and tilts up instead to show the ball coming down; backing off for a high ball there made him tiny.
+        bool frameBall = progress < inAirCamBallFrameUntil;
         float fieldOfView = inAirCamFieldOfView;
         float aspect = inAirCamera != null ? inAirCamera.aspect : 16f / 9f;
         float halfHeight = Mathf.Tan(fieldOfView * 0.5f * Mathf.Deg2Rad) * inAirCamFramingArea;
@@ -502,7 +509,7 @@ public class QB : MonoBehaviour
         for (int i = 0; i < 40; i++)
         {
             Vector3 position = focus - lookDirection * range;
-            if (InAirCameraSees(toView, position, ballPosition, halfWidth, halfHeight) &&
+            if ((!frameBall || InAirCameraSees(toView, position, ballPosition, halfWidth, halfHeight)) &&
                 InAirCameraSees(toView, position, receiverPoint, halfWidth, halfHeight) &&
                 InAirCameraSees(toView, position, receiverSpot, halfWidth, halfHeight))
             {
@@ -512,13 +519,44 @@ public class QB : MonoBehaviour
         }
         Vector3 desiredPosition = focus - lookDirection * range;
 
-        cameraTransform.position = Vector3.SmoothDamp(cameraTransform.position, desiredPosition, ref inAirCameraVelocity, Mathf.Max(0.01f, inAirCameraPositionSmoothTime));
+        // Follow relative to the WR: smooth the camera's offset from him, not its world position, so a fast WR
+        // (and a ~1 s pass) never leaves the camera trailing behind.
+        Vector3 currentOffset = cameraTransform.position - receiverSpot;
+        Vector3 offset = Vector3.SmoothDamp(currentOffset, desiredPosition - receiverSpot, ref inAirCameraVelocity, Mathf.Max(0.01f, inAirCameraPositionSmoothTime));
+        cameraTransform.position = receiverSpot + offset;
+
+        // Tilt up (up to inAirCamMaxTiltUp) when the ball is above the top of the frame, keeping his feet in frame.
+        if (!frameBall)
+        {
+            Vector3 cameraPosition = cameraTransform.position;
+            float halfFovDegrees = Mathf.Atan(halfHeight) * Mathf.Rad2Deg;
+            float ballElevation = ElevationFrom(cameraPosition, ballPosition, downfield);
+            float feetElevation = ElevationFrom(cameraPosition, receiverSpot, downfield);
+            float center = -pitch;
+            if (Vector3.Dot(ballPosition - cameraPosition, downfield) > 0f)
+            {
+                center = Mathf.Max(center, ballElevation - halfFovDegrees); // only once the ball is in front of the camera
+            }
+            center = Mathf.Min(center, feetElevation + halfFovDegrees, -pitch + Mathf.Max(0f, inAirCamMaxTiltUp));
+            center = Mathf.Max(center, -pitch);
+            viewRotation = Quaternion.LookRotation(Quaternion.AngleAxis(-center, cameraRight) * downfield, Vector3.up);
+        }
         float turn = 1f - Mathf.Exp(-inAirCameraTurnSpeed * Time.deltaTime);
         cameraTransform.rotation = Quaternion.Slerp(cameraTransform.rotation, viewRotation, turn);
         if (inAirCamera != null)
         {
             inAirCamera.fieldOfView = Mathf.Lerp(inAirCamera.fieldOfView, fieldOfView, 1f - Mathf.Exp(-4f * Time.deltaTime));
         }
+    }
+
+    /// <summary>
+    /// Degrees above (+) or below (-) level of a point seen from the camera, in the downfield view's vertical plane.
+    /// </summary>
+    static float ElevationFrom(Vector3 cameraPosition, Vector3 point, Vector3 downfield)
+    {
+        Vector3 delta = point - cameraPosition;
+        float ahead = Mathf.Max(0.01f, Vector3.Dot(delta, downfield));
+        return Mathf.Atan2(delta.y, ahead) * Mathf.Rad2Deg;
     }
 
     /// <summary>
