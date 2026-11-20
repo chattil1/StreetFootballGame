@@ -21,11 +21,13 @@ public class QB : MonoBehaviour
     // Unity keeps a component's saved values over a script's changed defaults, so when these defaults change,
     // InAirCamDefaultsVersion goes up and OnValidate applies the new defaults once (your own tweaks stay after that).
     [SerializeField, HideInInspector] private int inAirCamDefaultsVersion = 0;
-    const int InAirCamDefaultsVersion = 5;
+    const int InAirCamDefaultsVersion = 6;
     [Tooltip("Degrees the camera looks down at the field. Madden's in-air view is nearly level (~10), so the far field and stands show and a defender can see the ball coming. It always faces downfield (the way the QB faced at release).")]
     public float inAirCamTilt = 10f;
-    [Tooltip("The MOST the camera may back off during the flight to keep the ball in view, in receiver heights (this limit eases down to Distance At Catch as the ball reaches the WR). It only backs off past Distance At Catch as much as needed, after first lifting (up to Raise At Throw).")]
+    [Tooltip("Normal distance from the camera to the point it aims at right after the throw, in receiver heights. It eases to Distance At Catch as the ball reaches the WR.")]
     public float inAirCamDistanceAtThrow = 7.5f;
+    [Tooltip("The MOST the camera may back off right after the throw (eases down to Distance At Catch over the flight). It only goes past the normal distance as much as needed to keep the ball in view, after first lifting (up to Max Raise At Throw).")]
+    public float inAirCamMaxDistanceAtThrow = 15f;
     [Tooltip("Distance from the camera to the point it aims at as the ball reaches the WR, in receiver heights (smaller = closer / bigger receiver).")]
     public float inAirCamDistanceAtCatch = 4f;
     [Tooltip("Height of the point the camera aims at, in receiver heights (0.55 = about chest height), so getting closer doesn't put the camera below the players' heads.")]
@@ -36,8 +38,10 @@ public class QB : MonoBehaviour
     [Range(0f, 1f)] public float inAirCamCenterAtCatch = 1f;
     [Tooltip("Camera field of view (degrees) while the ball is in the air and after the catch. Smaller = more zoomed in.")]
     public float inAirCamFieldOfView = 42f;
-    [Tooltip("The MOST the camera may lift during the flight, in receiver heights (this limit eases down to Raise At Catch as the ball reaches the WR). It only lifts above Raise At Catch as much as needed to keep the top of the ball in the framing area. It always aims at the same point on him.")]
+    [Tooltip("Normal camera lift right after the throw, in receiver heights. It eases to Raise At Catch as the ball reaches the WR. It always aims at the same point on him.")]
     public float inAirCamRaiseAtThrow = 1.25f;
+    [Tooltip("The MOST the camera may lift right after the throw (eases down to Raise At Catch over the flight). It only goes above the normal lift as much as needed to keep the top of the ball in the framing area.")]
+    public float inAirCamMaxRaiseAtThrow = 2f;
     [Tooltip("How much higher the camera sits as the ball reaches the WR (and after the catch), in receiver heights.")]
     [UnityEngine.Serialization.FormerlySerializedAs("inAirCamRaise")]
     public float inAirCamRaiseAtCatch = 0.75f;
@@ -172,6 +176,13 @@ public class QB : MonoBehaviour
             // Version 5 splits Raise into At Throw / At Catch: At Catch keeps your old Raise value; At Throw starts a
             // little higher (+0.5 receiver heights).
             inAirCamRaiseAtThrow = inAirCamRaiseAtCatch + 0.5f;
+        }
+        if (inAirCamDefaultsVersion < 6)
+        {
+            // Version 6 splits the At Throw values into normal + max: the normal ones keep your values, the maxes
+            // start 50% higher.
+            inAirCamMaxRaiseAtThrow = inAirCamRaiseAtThrow * 1.5f;
+            inAirCamMaxDistanceAtThrow = inAirCamDistanceAtThrow * 1.5f;
         }
         inAirCamDefaultsVersion = InAirCamDefaultsVersion;
     }
@@ -521,11 +532,11 @@ public class QB : MonoBehaviour
         Quaternion viewRotation = Quaternion.LookRotation(lookDirection, Vector3.up);
 
         float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
-        // Aim at about chest height above the focus spot. Distance: normally Distance At Catch; Distance At Throw is
-        // the most it may back off for the ball (that limit eases down to Distance At Catch over the flight).
+        // Aim at about chest height above the focus spot. Distance: normally Distance At Throw -> At Catch over the
+        // flight; Max Distance At Throw (also easing to At Catch) is the most it may back off when the ball needs it.
         focus += Vector3.up * (inAirCamAimHeight * unit);
-        float range = inAirCamDistanceAtCatch * unit;
-        float maxBallRange = Mathf.Max(inAirCamDistanceAtCatch, Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, eased)) * unit;
+        float range = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, eased) * unit;
+        float maxBallRange = Mathf.Max(range, Mathf.Lerp(inAirCamMaxDistanceAtThrow, inAirCamDistanceAtCatch, eased) * unit);
 
         // The camera sits inAirCamRaiseAtThrow -> AtCatch receiver heights higher and still aims at the focus.
         // Two distances: one that keeps the WR in the framing area, one that keeps the ball in it too. The camera
@@ -536,13 +547,13 @@ public class QB : MonoBehaviour
         float aspect = inAirCamera != null ? inAirCamera.aspect : 16f / 9f;
         float halfHeight = Mathf.Tan(fieldOfView * 0.5f * Mathf.Deg2Rad) * inAirCamFramingArea;
         float halfWidth = halfHeight * aspect;
-        // Raise: normally Raise At Catch. Raise At Throw is the most it may lift (easing down to Raise At Catch over
-        // the flight), and it only lifts as much as needed to fit the top of the ball in the framing area without
-        // backing off; if even the most isn't enough, it uses the most and backs off for the rest.
+        // Raise: normally Raise At Throw -> At Catch over the flight. Max Raise At Throw (also easing to At Catch) is
+        // the most it may lift, and only as much as needed to fit the top of the ball in the framing area without
+        // backing off; if even the most isn't enough, it uses the most and backs off (up to the max distance).
         Collider ballCollider = football.GetComponentInChildren<Collider>();
         Vector3 ballTop = ballPosition + Vector3.up * (ballCollider != null ? ballCollider.bounds.extents.y : 0f);
-        float baseRaise = inAirCamRaiseAtCatch;
-        float maxRaise = Mathf.Max(baseRaise, Mathf.Lerp(inAirCamRaiseAtThrow, inAirCamRaiseAtCatch, eased));
+        float baseRaise = Mathf.Lerp(inAirCamRaiseAtThrow, inAirCamRaiseAtCatch, eased);
+        float maxRaise = Mathf.Max(baseRaise, Mathf.Lerp(inAirCamMaxRaiseAtThrow, inAirCamRaiseAtCatch, eased));
         Vector3 raise = Vector3.up * (maxRaise * unit);
         float receiverRange = range;
         float ballRange = range;
