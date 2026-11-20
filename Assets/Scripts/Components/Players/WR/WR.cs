@@ -2188,8 +2188,12 @@ public class WR : MonoBehaviour
         {
             return false;
         }
-        Transform palm = leftHand.Find("LeftPalmCatchArea");
-        Vector3 palmPosition = palm != null ? palm.position : leftHand.position;
+        // Use where the palm WILL be for the catch (arm straight the way the stick / L2 aim it, from the shoulder's
+        // normal spot), the same point the QB aimed the throw at, not where the palm is right now. Mid swing or
+        // while the arm is still rising the palm is low, so the ball "comes down to its height" further downfield;
+        // chasing that made him speed up (e.g. 21 -> 26 mph) and run past a ball that was thrown exactly right.
+        // With this, a WR who keeps running as he was at the throw needs no change at all.
+        Vector3 palmPosition = GetLeftPalmCatchPosition();
         if (!PredictBallLanding(palmPosition.y, out Vector3 landingSpot, out float seconds))
         {
             return false;
