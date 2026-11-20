@@ -1863,7 +1863,12 @@ public class WR : MonoBehaviour
             runVelocity = Vector3.ProjectOnPlane(runVelocity, Vector3.up).normalized * runVelocity.magnitude;
             Vector3 currentHorizontalVelocity = Vector3.ProjectOnPlane(gameObject.GetComponent<Rigidbody>().velocity, Vector3.up);
             Vector3 desiredVelocity = Vector3.MoveTowards(currentHorizontalVelocity, runVelocity, runAcceleration * Time.fixedDeltaTime);
-            Vector3 acceleration = (desiredVelocity - currentHorizontalVelocity) / Time.fixedDeltaTime;
+            // The Rigidbody's Drag (0.6 on WRX) then takes ~1.2% of his speed off every step. At the old huge
+            // acceleration that didn't matter, but at a real one (10 mph/s) drag ate almost all of it: he topped out
+            // near 15 mph instead of ~19 and gained speed far slower than the throw's lead assumed (ball 2.5 m ahead
+            // of him). Push for the speed that is left after drag, so he really runs at the set acceleration / top speed.
+            float dragKeep = Mathf.Max(0.05f, 1f - gameObject.GetComponent<Rigidbody>().drag * Time.fixedDeltaTime);
+            Vector3 acceleration = (desiredVelocity / dragKeep - currentHorizontalVelocity) / Time.fixedDeltaTime;
             gameObject.GetComponent<Rigidbody>().AddForce(acceleration * gameObject.GetComponent<Rigidbody>().mass, ForceMode.Force);
             gameObject.GetComponent<Animator>().SetBool("runningForward", true);
         }
