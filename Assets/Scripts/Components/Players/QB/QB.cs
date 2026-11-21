@@ -845,6 +845,10 @@ public class QB : MonoBehaviour
     float passCheckTargetMiss = -1f;
     Vector3 passCheckTargetOffset;
     bool passCheckActive;
+    int passCheckStartFrame;
+    float passCheckArmError = -1f;
+    float passCheckPlannedPalmMiss = -1f;
+    bool passCheckHoldingCatch;
 
     void StartPassCheck(WR receiver, Vector3 target, float releaseDelay, Vector3 launchVelocity, Vector3 receiverVelocity)
     {
@@ -854,6 +858,9 @@ public class QB : MonoBehaviour
         passCheckLaunchVelocity = launchVelocity;
         passCheckReceiverVelocity = receiverVelocity;
         passCheckStartTime = Time.time + releaseDelay;
+        passCheckStartFrame = Time.frameCount;
+        passCheckArmError = -1f;
+        passCheckPlannedPalmMiss = -1f;
         passCheckClosest = float.MaxValue;
         passCheckClosestTime = 0f;
         passCheckReceiverSpeedAtArrival = 0f;
@@ -886,6 +893,9 @@ public class QB : MonoBehaviour
             passCheckTargetMiss = passCheckTargetOffset.magnitude;
             Rigidbody receiverBody = passCheckReceiver.GetComponent<Rigidbody>();
             passCheckReceiverSpeedAtArrival = receiverBody != null ? Vector3.ProjectOnPlane(receiverBody.velocity, Vector3.up).magnitude : 0f;
+            passCheckArmError = passCheckReceiver.GetLeftArmAimError(out bool holdingCatch);
+            passCheckHoldingCatch = holdingCatch;
+            passCheckPlannedPalmMiss = Vector3.Distance(passCheckReceiver.GetLeftPalmCatchPosition(), ballBody.position);
         }
         bool caught = passCheckReceiver.caughtFootball != null || ballBody.isKinematic;
         if (caught || flightTime > timeToCatch + 0.5f)
@@ -901,7 +911,11 @@ public class QB : MonoBehaviour
                 passCheckClosest, passCheckClosest / unit, passCheckClosestTime,
                 passCheckLaunchVelocity.magnitude, passCheckLaunchVelocity.magnitude / mph,
                 passCheckReceiverVelocity.magnitude, passCheckReceiverVelocity.magnitude / mph,
-                passCheckReceiverSpeedAtArrival, passCheckReceiverSpeedAtArrival / mph));
+                passCheckReceiverSpeedAtArrival, passCheckReceiverSpeedAtArrival / mph)
+                + string.Format(" When due: holding Y (catch) = {0}, left arm {1:0} deg from its stick aim, the stick-aimed (straight-arm) palm was {2:0.00} m from the ball. " +
+                    "Frame rate during the flight: {3:0} fps.",
+                    passCheckHoldingCatch, passCheckArmError, passCheckPlannedPalmMiss / unit,
+                    (Time.frameCount - passCheckStartFrame) / Mathf.Max(0.01f, Time.fixedTime - passCheckStartTime)));
         }
     }
 

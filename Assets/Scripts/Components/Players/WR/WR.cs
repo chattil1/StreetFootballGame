@@ -143,6 +143,7 @@ public class WR : MonoBehaviour
     private readonly List<Vector3> predictedBallPath = new List<Vector3>();
     private float predictedBallPathStep = 0f;
     private int predictedBallPathFrame = -1;
+    private float predictedBallPathFixedTime = -1f;
     public Vector3 elbowVerticalRotationAxis = Vector3.up;
     public Vector3 elbowForward = new Vector3(0, -1, 0);
     public Vector3 wrForward = new Vector3(1, 0, 1);
@@ -152,6 +153,11 @@ public class WR : MonoBehaviour
     //public Transform leftArm;
     [Header("Set Dynamically")]
     float aimSpeed = 0f;
+    [Tooltip("How fast the left arm swings to the stick's catch aim, in degrees per second at full stick (it still ramps up over the first second of holding Y). " +
+        "It used to be 30 degrees per FRAME, so on a slow frame rate (e.g. on the TV) the arm reached its catch position far too late and the ball went past it. 1800 = the old speed at 60 fps.")]
+    public float armAimDegreesPerSecond = 1800f;
+    /// <summary>Turns an amount that was tuned "per frame at 60 fps" into this frame's amount, so it's the same per second at any frame rate.</summary>
+    static float PerFrameAt60 => Mathf.Min(Time.deltaTime, 0.1f) * 60f;
     PlaneViewModel currentLeftArmRotation = new PlaneViewModel();
     float maxHorizontalRotationCounterClockwise = 45f;
     float maxHorizontalRotationClockwise = 225f;
@@ -2125,11 +2131,14 @@ public class WR : MonoBehaviour
     /// </summary>
     bool PredictBallPath()
     {
-        if (predictedBallPathFrame == Time.frameCount)
+        // Cached per frame AND per physics step: on a slow frame rate there are several physics steps per frame, and
+        // reusing one frame's path in all of them made the catch-run / movement assists aim with stale timing.
+        if (predictedBallPathFrame == Time.frameCount && Mathf.Approximately(predictedBallPathFixedTime, Time.fixedTime))
         {
             return predictedBallPath.Count > 1;
         }
         predictedBallPathFrame = Time.frameCount;
+        predictedBallPathFixedTime = Time.fixedTime;
         predictedBallPath.Clear();
         Rigidbody ball = GetBallInFlight();
         if (ball == null)
@@ -2247,6 +2256,21 @@ public class WR : MonoBehaviour
         float speed = Mathf.Min(needed.magnitude, targetSpeed * Mathf.Max(0f, catchRunMaxSpeedMultiplier));
         velocity = direction * speed;
         return true;
+    }
+
+    /// <summary>
+    /// Degrees between where the left arm points now and where the stick aims it (for the pass check log), and
+    /// whether he's holding the catch (Y + stick).
+    /// </summary>
+    public float GetLeftArmAimError(out bool catching)
+    {
+        catching = isCatching;
+        Transform upperArm = leftArm != null ? leftArm.Find("LeftArm") : null;
+        if (upperArm == null || leftArmCatchStickTarget.sqrMagnitude < 1e-6f)
+        {
+            return -1f;
+        }
+        return Vector3.Angle(-upperArm.right, leftArmCatchStickTarget);
     }
 
     /// <summary>Left shoulder joint (top of the left upper arm), for aiming throws.</summary>
@@ -3108,7 +3132,7 @@ public class WR : MonoBehaviour
                     aimSpeed += Time.deltaTime;
                     aimSpeed = Mathf.Clamp01(aimSpeed);
                     //ITransformRotation leftArmController = GetTransformController(BodyPart.leftArm, Axis.inverseRight, Axis.inverseRight, Axis.forward, leftArm.Find("LeftArm"), leftHand, movementInput, transform.forward, desiredDirection, -leftArm.Find("LeftArm").right, throwDrectionAxisOfRotationInput3DVector, 60f * movementInput.magnitude, "LeftArm");
-                    ITransformRotation leftArmController = GetTransformController(BodyPart.leftArm, Axis.inverseRight, Axis.inverseRight, Axis.forward, leftArm.Find("LeftArm"), transform, leftHand, movementInput, transform.forward, tForLeftArm, -leftArm.Find("LeftArm").right, targetTwist, 30f * aimSpeed * Mathf.Pow(movementInput.magnitude, 3f) , "LeftArm", currentLeftArmRotation);
+                    ITransformRotation leftArmController = GetTransformController(BodyPart.leftArm, Axis.inverseRight, Axis.inverseRight, Axis.forward, leftArm.Find("LeftArm"), transform, leftHand, movementInput, transform.forward, tForLeftArm, -leftArm.Find("LeftArm").right, targetTwist, armAimDegreesPerSecond * Time.deltaTime * aimSpeed * Mathf.Pow(movementInput.magnitude, 3f) , "LeftArm", currentLeftArmRotation);
                     //ITransformRotation leftArmController = GetTransformController(BodyPart.root, Axis.forward, Axis.inverseRight, Axis.forward, leftArm.Find("LeftArm"), leftHand, movementInput, transform.forward, targetTwist, -leftArm.Find("LeftArm").right, targetTwist, 60f * movementInput.magnitude, "LeftArm");
                     //ITransformRotation leftArmControllerRoot = GetTransformController(BodyPart.root, Axis.inverseRight, Axis.inverseRight, Axis.forward, leftArm.Find("LeftArm"), leftHand, movementInput, transform.forward, desiredDirection, trajectoryUp, desiredDirection, 60f * movementInput.magnitude, "LeftArm");
 
@@ -3314,10 +3338,10 @@ public class WR : MonoBehaviour
                                 {
                                     targetCatchDirection = throwTargetPosition - leftArm.Find("LeftArm").position;
                                     if (targetCatchDirection.magnitude < 20f) {
-                                        rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, leftHand, Vector2.zero, transform.forward, targetCatchDirection, Vector3.up, Vector3.forward, 60f * movementInput.magnitude, "LeftArm");
+                                        rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, leftHand, Vector2.zero, transform.forward, targetCatchDirection, Vector3.up, Vector3.forward, 60f * PerFrameAt60 * movementInput.magnitude, "LeftArm");
                                         rootRotation = rootController.AlignTransformAxis();
 
-                                        leftArmController = GetTransformController(BodyPart.leftArm, Axis.inverseRight, Axis.inverseRight, Axis.forward, leftArm.Find("LeftArm"), leftHand, movementInput, transform.forward, targetCatchDirection, -leftArm.Find("LeftArm").right, defaultAxisOfRotation, 90f * movementInput.magnitude, "LeftArm");
+                                        leftArmController = GetTransformController(BodyPart.leftArm, Axis.inverseRight, Axis.inverseRight, Axis.forward, leftArm.Find("LeftArm"), leftHand, movementInput, transform.forward, targetCatchDirection, -leftArm.Find("LeftArm").right, defaultAxisOfRotation, 90f * PerFrameAt60 * movementInput.magnitude, "LeftArm");
                                         leftArmRotation = leftArmController.AlignTransformAxis();
                                     }
 
@@ -3619,7 +3643,7 @@ public class WR : MonoBehaviour
                         break;
                     }
                     Vector3 postCatchRouteDirection = GetPostCatchRouteDirection(playerInput.actions["Catch"].ReadValue<Vector2>());
-                    rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, transform, leftHand, Vector2.zero, transform.forward, postCatchRouteDirection, Vector3.up, Vector3.forward, 30f, "LeftArm", new PlaneViewModel() { });
+                    rootController = GetTransformController(BodyPart.root, Axis.forward, Axis.up, Axis.forward, transform, transform, leftHand, Vector2.zero, transform.forward, postCatchRouteDirection, Vector3.up, Vector3.forward, 30f * PerFrameAt60, "LeftArm", new PlaneViewModel() { });
                     rootRotation = rootController.AlignTransformAxis();
                     if (rootRotation[0].Value)
                     {
