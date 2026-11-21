@@ -110,6 +110,13 @@ public class WR : MonoBehaviour
     public float aimAssistFullTime = 0.5f;
     [Tooltip("No aim assist if the ball passes further than this many arm lengths from the shoulder.")]
     public float aimAssistMaxMissArmLengths = 4f;
+    [Tooltip("Aim assist stays off while the palm (where the stick aims it) is already on the ball's path: within this fraction of Catch Reach Meters of it.")]
+    [Range(0f, 2f)] public float aimAssistAlignedFraction = 0.8f;
+    [Tooltip("Seconds the aim assist takes to ease in / out and to follow the ball (higher = smoother, slower).")]
+    public float aimAssistSmoothTime = 0.3f;
+    private float aimAssistWeight = 0f;
+    private float aimAssistWeightVelocity = 0f;
+    private Vector3 aimAssistDirection = Vector3.zero;
     [Tooltip("Most the run direction is pulled from the stick towards where the ball comes down (0..1).")]
     [Range(0f, 1f)] public float moveAssistMaxWeight = 0.5f;
     [Tooltip("Seconds before the ball comes down when the movement assist starts.")]
@@ -2250,26 +2257,60 @@ public class WR : MonoBehaviour
     }
 
     /// <summary>
-    /// Aim assist: pulls the left arm's stick target towards where the ball will be when it reaches the WR,
-    /// starting aimAssistStartTime before it arrives and up to aimAssistMaxWeight by aimAssistFullTime.
-    /// No pull if the ball will pass far away from the WR.
+    /// Aim assist: eases the left arm's stick target towards the ball, but only when the palm (where the stick aims
+    /// it) is NOT already on the ball's path. If it is (the ball will pass within aimAssistAlignedFraction of the
+    /// catch reach of it), the assist stays off so it can't knock a good aim off. Otherwise it eases in with how far
+    /// off the aim is, and with time (from aimAssistStartTime before arrival to full by aimAssistFullTime), up to
+    /// aimAssistMaxWeight. Both its strength and the direction it pulls to are smoothed over aimAssistSmoothTime,
+    /// so it never snaps as the ball gets close. No pull if the ball passes far from him.
     /// </summary>
     Vector3 ApplyAimAssist(Vector3 stickTarget)
     {
-        if (stickTarget.sqrMagnitude < 1e-6f || aimAssistMaxWeight <= 0f)
+        float desiredWeight = 0f;
+        Vector3 desiredDirection = aimAssistDirection;
+        if (stickTarget.sqrMagnitude > 1e-6f && aimAssistMaxWeight > 0f && PredictBallPath()
+            && PredictBallClosestApproach(out float seconds, out float shoulderMiss, out Vector3 ballDirection))
+        {
+            Transform shoulder = leftArm.Find("LeftArm");
+            float armLength = Vector3.Distance(shoulder.position, leftHand.position);
+            float maxMiss = Mathf.Max(0.01f, armLength * aimAssistMaxMissArmLengths);
+            // How close the ball's path comes to the palm where the stick puts it (moving with him).
+            Rigidbody wrBody = GetComponent<Rigidbody>();
+            Vector3 wrVelocity = wrBody != null ? Vector3.ProjectOnPlane(wrBody.velocity, Vector3.up) : Vector3.zero;
+            Vector3 stickPalm = GetLeftPalmCatchPosition(stickTarget.normalized);
+            float palmMiss = float.MaxValue;
+            Vector3 ballAtPalmPass = Vector3.zero;
+            for (int i = 0; i < predictedBallPath.Count; i++)
+            {
+                float t = i * predictedBallPathStep;
+                float d = Vector3.Distance(predictedBallPath[i], stickPalm + wrVelocity * t);
+                if (d < palmMiss)
+                {
+                    palmMiss = d;
+                    ballAtPalmPass = predictedBallPath[i] - wrVelocity * t; // in his current frame
+                }
+            }
+            float aligned = Mathf.Max(0.01f, catchReachMeters * GetUnitsPerMeter() * aimAssistAlignedFraction);
+            float offAim = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((palmMiss - aligned) / aligned)); // 0 on target .. 1 at twice the radius
+            float timing = Mathf.Clamp01((aimAssistStartTime - seconds) / Mathf.Max(0.01f, aimAssistStartTime - aimAssistFullTime));
+            float proximity = Mathf.Clamp01(1f - shoulderMiss / maxMiss);
+            desiredWeight = aimAssistMaxWeight * timing * proximity * offAim;
+            Vector3 toBall = ballAtPalmPass - GetLeftShoulderPosition();
+            desiredDirection = toBall.sqrMagnitude > 1e-6f ? toBall.normalized : ballDirection;
+        }
+        float smooth = Mathf.Max(0.01f, aimAssistSmoothTime);
+        aimAssistWeight = Mathf.SmoothDamp(aimAssistWeight, desiredWeight, ref aimAssistWeightVelocity, smooth);
+        if (desiredDirection.sqrMagnitude > 1e-6f)
+        {
+            aimAssistDirection = aimAssistDirection.sqrMagnitude < 1e-6f
+                ? desiredDirection
+                : Vector3.Slerp(aimAssistDirection, desiredDirection, 1f - Mathf.Exp(-Time.deltaTime / smooth)).normalized;
+        }
+        if (aimAssistWeight <= 1e-3f || aimAssistDirection.sqrMagnitude < 1e-6f || stickTarget.sqrMagnitude < 1e-6f)
         {
             return stickTarget;
         }
-        if (!PredictBallClosestApproach(out float seconds, out float missDistance, out Vector3 ballDirection))
-        {
-            return stickTarget;
-        }
-        float armLength = Vector3.Distance(leftArm.Find("LeftArm").position, leftHand.position);
-        float maxMiss = Mathf.Max(0.01f, armLength * aimAssistMaxMissArmLengths);
-        float timing = Mathf.Clamp01((aimAssistStartTime - seconds) / Mathf.Max(0.01f, aimAssistStartTime - aimAssistFullTime));
-        float proximity = Mathf.Clamp01(1f - missDistance / maxMiss);
-        float weight = aimAssistMaxWeight * timing * proximity;
-        return weight > 0f ? Vector3.Slerp(stickTarget.normalized, ballDirection, weight).normalized : stickTarget;
+        return Vector3.Slerp(stickTarget.normalized, aimAssistDirection, aimAssistWeight).normalized;
     }
 
     /// <summary>
