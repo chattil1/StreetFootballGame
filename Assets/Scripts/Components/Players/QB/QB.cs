@@ -38,9 +38,10 @@ public class QB : MonoBehaviour
     [Range(0f, 1f)] public float inAirCamCenterAtCatch = 1f;
     [Tooltip("Camera field of view (degrees) while the ball is in the air and after the catch. Smaller = more zoomed in.")]
     public float inAirCamFieldOfView = 42f;
-    [Tooltip("The WIDEST the in-air field of view may get. It stays at In Air Cam Field Of View and only widens (as little as needed, up to this) " +
-        "when the ball would otherwise be off screen after the camera has lifted (up to Max Raise At Throw); only past this does it back off (up to Max Distance At Throw).")]
+    [Tooltip("The WIDEST the in-air field of view may be. At each release the field of view for the whole flight is worked out once, from the top of the " +
+        "throw's arc: In Air Cam Field Of View, widened only as much as needed to keep the ball in view there (after lifting up to Max Raise At Throw), up to this. It doesn't change during the flight.")]
     public float inAirCamMaxFieldOfView = 55f;
+    private float throwFieldOfView = 0f;
     [Tooltip("Not used any more: the lift during the flight is now worked out from the ball (just enough to keep it at the top of the screen, between Raise At Catch and Max Raise At Throw).")]
     public float inAirCamRaiseAtThrow = 1.25f;
     [Tooltip("The MOST the camera may lift right after the throw (eases down to Raise At Catch over the flight). It only goes above the normal lift as much as needed to keep the top of the ball in the framing area.")]
@@ -525,8 +526,9 @@ public class QB : MonoBehaviour
         Transform cameraTransform = mainCamera.transform;
         float progress = timeToCatch > 0f ? Mathf.Clamp01((Time.time - timeThrown) / timeToCatch) : 1f;
         float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
+        float fieldOfView = throwFieldOfView > 0f ? throwFieldOfView : inAirCamFieldOfView;
         ComputeInAirCameraPose(receiverObject, football.transform.position, progress, unit, inAirCamera,
-            out Vector3 desiredPosition, out Quaternion viewRotation, out Vector3 receiverSpot, out float fieldOfView);
+            fieldOfView, false, Vector3.zero, out Vector3 desiredPosition, out Quaternion viewRotation, out Vector3 receiverSpot, out _);
 
         // Follow relative to the WR: smooth the camera's offset from him, not its world position, so a fast WR
         // (and a ~1 s pass) never leaves the camera trailing behind.
@@ -537,7 +539,7 @@ public class QB : MonoBehaviour
         cameraTransform.rotation = Quaternion.Slerp(cameraTransform.rotation, viewRotation, turn);
         if (inAirCamera != null)
         {
-            inAirCamera.fieldOfView = Mathf.Lerp(inAirCamera.fieldOfView, fieldOfView, 1f - Mathf.Exp(-4f * Time.deltaTime));
+            inAirCamera.fieldOfView = fieldOfView; // fixed for the whole flight (worked out at the release)
         }
     }
 
@@ -547,14 +549,17 @@ public class QB : MonoBehaviour
     /// the throw wind-up transition (progress 0 with the ball still in the QB's hand).
     /// </summary>
     void ComputeInAirCameraPose(GameObject receiverObject, Vector3 ballPosition, float progress, float unit, Camera inAirCamera,
+        float flightFieldOfView, bool solveFieldOfView, Vector3 receiverShift,
         out Vector3 desiredPosition, out Quaternion viewRotation, out Vector3 receiverSpot, out float fieldOfViewNeeded)
     {
         WR receiver = receiverObject.GetComponent<WR>();
 
-        float groundHeight = receiverObject.transform.position.y;
-        Vector3 receiverPoint = receiver != null ? receiver.GetLeftShoulderPosition() : receiverObject.transform.position;
+        // receiverShift: where he'll have moved by then (used when working out the pose for a later moment).
+        Vector3 receiverPosition = receiverObject.transform.position + receiverShift;
+        float groundHeight = receiverPosition.y;
+        Vector3 receiverPoint = (receiver != null ? receiver.GetLeftShoulderPosition() : receiverObject.transform.position) + receiverShift;
         Vector3 ballSpot = new Vector3(ballPosition.x, groundHeight, ballPosition.z);
-        receiverSpot = new Vector3(receiverObject.transform.position.x, groundHeight, receiverObject.transform.position.z);
+        receiverSpot = new Vector3(receiverPosition.x, groundHeight, receiverPosition.z);
 
         float eased = Mathf.SmoothStep(0f, 1f, progress);
         Vector3 focus = Vector3.Lerp(ballSpot, receiverSpot, Mathf.Lerp(inAirCamCenterAtThrow, inAirCamCenterAtCatch, eased));
@@ -575,7 +580,11 @@ public class QB : MonoBehaviour
         // blends from the second to the first smoothly over the flight (fully by inAirCamBallFrameUntil), so it's one
         // steady move in on the WR / the throw's target instead of backing off for a high ball and then jumping in.
         float letGo = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(progress / Mathf.Max(0.01f, inAirCamBallFrameUntil)));
-        float fieldOfView = inAirCamFieldOfView;
+        if (solveFieldOfView)
+        {
+            letGo = 0f; // working out the throw's field of view: the ball must fit
+        }
+        float fieldOfView = flightFieldOfView;
         float aspect = inAirCamera != null ? inAirCamera.aspect : 16f / 9f;
         float halfHeight = Mathf.Tan(fieldOfView * 0.5f * Mathf.Deg2Rad) * inAirCamFramingArea;
         float halfWidth = halfHeight * aspect;
@@ -619,10 +628,11 @@ public class QB : MonoBehaviour
         raise = Vector3.up * (raiseAmount * unit);
         receiverRange = InAirCameraRange(focus, lookDirection, raise, range, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
 
-        // Field of view: In Air Cam Field Of View, widened only as much as it takes to fit the ball (top and sides)
-        // in the framing area at this lift and distance, up to Max Field Of View. Eases back as the ball is let go.
+        // Field of view (only when working it out for the throw, at the top of its arc): In Air Cam Field Of View,
+        // widened only as much as it takes to fit the ball (top and sides) in the framing area at this lift and
+        // distance, up to Max Field Of View.
         fieldOfViewNeeded = fieldOfView;
-        if (letGo < 1f && inAirCamMaxFieldOfView > fieldOfView)
+        if (solveFieldOfView && inAirCamMaxFieldOfView > fieldOfView)
         {
             Vector3 cameraAt = focus - lookDirection * receiverRange + raise;
             Vector3 local = Quaternion.Inverse(Quaternion.LookRotation(focus - cameraAt, Vector3.up)) * (ballTop - cameraAt);
@@ -632,7 +642,7 @@ public class QB : MonoBehaviour
                 float neededTan = Mathf.Max(Mathf.Abs(local.y / local.z), Mathf.Abs(local.x / local.z) / Mathf.Max(0.1f, aspect)) / framing;
                 float neededFov = 2f * Mathf.Atan(neededTan) * Mathf.Rad2Deg;
                 float ballFov = Mathf.Clamp(neededFov, fieldOfView, inAirCamMaxFieldOfView);
-                fieldOfViewNeeded = Mathf.Lerp(ballFov, fieldOfView, letGo);
+                fieldOfViewNeeded = ballFov;
             }
             halfHeight = Mathf.Tan(fieldOfViewNeeded * 0.5f * Mathf.Deg2Rad) * inAirCamFramingArea;
             halfWidth = halfHeight * aspect;
@@ -668,6 +678,49 @@ public class QB : MonoBehaviour
             }
         }
         return parentFootballPositionPrefab;
+    }
+
+    /// <summary>
+    /// The field of view for this whole flight, worked out once at the release from the top of the throw's arc (its
+    /// biggest delta Y): where the ball and the receiver will be then, and where the camera will be (its distance,
+    /// and its lift up to Max Raise At Throw), then In Air Cam Field Of View widened only as much as it takes to keep
+    /// the ball in view there, up to In Air Cam Max Field Of View. It's set right away, so it doesn't change in the air.
+    /// </summary>
+    float WorkOutThrowFieldOfView(GameObject receiverObject, WR receiver, Vector3 releasePosition, Vector3 launchVelocity, float gravity, float releaseDelay)
+    {
+        float fieldOfView = inAirCamFieldOfView;
+        if (!useBroadcastInAirCamera || receiverObject == null || mainCamera == null || timeToCatch <= 0f || gravity <= 0f)
+        {
+            return fieldOfView;
+        }
+        float apexTime = Mathf.Clamp(launchVelocity.y / gravity, 0f, timeToCatch);
+        Vector3 apex = releasePosition + new Vector3(launchVelocity.x * apexTime, launchVelocity.y * apexTime - 0.5f * gravity * apexTime * apexTime, launchVelocity.z * apexTime);
+        Vector3 receiverShift = receiver != null ? receiver.PredictRunDisplacement(releaseDelay + apexTime) : Vector3.zero;
+        Camera cam = mainCamera.GetComponent<Camera>();
+        float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
+        ComputeInAirCameraPose(receiverObject, apex, apexTime / timeToCatch, unit, cam, inAirCamFieldOfView, true, receiverShift,
+            out _, out _, out _, out fieldOfView);
+        if (cam != null)
+        {
+            cam.fieldOfView = fieldOfView;
+        }
+        return fieldOfView;
+    }
+
+    /// <summary>
+    /// Where the top of the ball is on screen, vertically, for a camera lifted by raiseHeight at this distance and
+    /// aiming at the focus: 0 = middle, 1 = top of the framing area, above 1 = off the top. A ball behind the camera
+    /// or nearly overhead counts as 0 (lifting can't bring it in; it comes into view by itself).
+    /// </summary>
+    static float BallScreenHeight(Vector3 focus, Vector3 lookDirection, float raiseHeight, float range, Vector3 ballTop, float halfHeight)
+    {
+        Vector3 position = focus - lookDirection * range + Vector3.up * raiseHeight;
+        Vector3 local = Quaternion.Inverse(Quaternion.LookRotation(focus - position, Vector3.up)) * (ballTop - position);
+        if (local.z <= 0.1f * range)
+        {
+            return 0f;
+        }
+        return (local.y / local.z) / Mathf.Max(1e-4f, halfHeight);
     }
 
     /// <summary>
@@ -1720,6 +1773,8 @@ public class QB : MonoBehaviour
 
             parentFootballPosition.GetComponent<Rigidbody>().AddForce(impulseForceOfficial, ForceMode.Impulse);
             StartPassCheck(receiver, throwingTargetPosition, releaseDelay, new Vector3(velX, velY, velZ), receiverVelocity);
+            throwFieldOfView = WorkOutThrowFieldOfView(wrToUse.gameObject, receiver, football.transform.position,
+                new Vector3(velX, velY, velZ), ballGravity, releaseDelay);
 
             float stepTime = timeInAir / lineCount;
             float timeVal = Mathf.Abs(timeInAir);
