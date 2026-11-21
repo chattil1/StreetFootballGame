@@ -1948,12 +1948,27 @@ public class WR : MonoBehaviour
         rb.AddForce(Physics.gravity * (multiplier - 1f), ForceMode.Acceleration);
     }
 
+    private SkinnedMeshRenderer builtCharacterRenderer;
+
+    /// <summary>
+    /// True once UMA has built his mesh. The search (through every bone) runs only until it's found, then the
+    /// renderer is kept; it used to run every physics step.
+    /// </summary>
+    bool IsCharacterBuilt()
+    {
+        if (builtCharacterRenderer == null)
+        {
+            builtCharacterRenderer = GetComponentInChildren<SkinnedMeshRenderer>();
+        }
+        return builtCharacterRenderer != null;
+    }
+
     /// <summary>
     /// The WR's height in world units (measured once UMA has built him; 1.8 x his scale until then).
     /// </summary>
     public float GetPlayerHeightUnits()
     {
-        if (playerHeightUnits <= 0f && GetComponentInChildren<SkinnedMeshRenderer>() != null)
+        if (playerHeightUnits <= 0f && IsCharacterBuilt())
         {
             playerHeightUnits = global::QB.MeasurePlayerHeight(gameObject); // once UMA has built him
         }
@@ -1975,7 +1990,7 @@ public class WR : MonoBehaviour
     /// </summary>
     void ScaleRunSpeedToPlayerSize()
     {
-        if (!useRealWorldRunSpeed || GetComponentInChildren<SkinnedMeshRenderer>() == null)
+        if (!useRealWorldRunSpeed || !IsCharacterBuilt())
         {
             return;
         }
@@ -2006,6 +2021,21 @@ public class WR : MonoBehaviour
         return direction * distance;
     }
 
+    private static GameObject cachedPivotAnchor;
+
+    /// <summary>
+    /// The caught ball's joint anchor ("PivotAnchor"), cached: GameObject.Find searches every object in the scene
+    /// (thousands of UMA bones) and was called several times a frame after the catch.
+    /// </summary>
+    static GameObject FindPivotAnchor()
+    {
+        if (cachedPivotAnchor == null)
+        {
+            cachedPivotAnchor = GameObject.Find("PivotAnchor");
+        }
+        return cachedPivotAnchor;
+    }
+
     /// <summary>
     /// The caught ball rides in the hand: kinematic and not colliding, so moving it to the palm every frame can't
     /// push the WR around (and no forces on it can either). Its joint anchor is made kinematic too.
@@ -2027,7 +2057,7 @@ public class WR : MonoBehaviour
             ballBody.isKinematic = true;
             ballBody.detectCollisions = false;
         }
-        GameObject pivotAnchor = GameObject.Find("PivotAnchor");
+        GameObject pivotAnchor = FindPivotAnchor();
         Rigidbody pivotBody = pivotAnchor != null ? pivotAnchor.GetComponent<Rigidbody>() : null;
         if (pivotBody != null && !pivotBody.isKinematic)
         {
@@ -2121,6 +2151,11 @@ public class WR : MonoBehaviour
         {
             return null; // still in the QB's hand
         }
+        TestCollision flight = ballParent.GetComponent<TestCollision>();
+        if (flight.wrBodyPosition != null && flight.wrBodyPosition != transform)
+        {
+            return null; // thrown to the other receiver: nothing for this one to track
+        }
         Rigidbody ball = ballParent.GetComponent<Rigidbody>();
         return ball != null && !ball.isKinematic ? ball : null;
     }
@@ -2150,7 +2185,15 @@ public class WR : MonoBehaviour
         Vector3 position = ball.position;
         Vector3 velocity = ball.velocity;
         Vector3 gravity = ball.useGravity ? Physics.gravity * global::QB.BallGravityMultiplier : Vector3.zero;
-        int steps = Mathf.CeilToInt(ballPredictionTime / step);
+        // Only as far as needed: until a second past the pass's planned arrival (was always 6 s = 300 steps).
+        float horizon = ballPredictionTime;
+        global::QB qb = QB != null ? QB.GetComponent<global::QB>() : null;
+        if (qb != null && qb.GetIsThrown())
+        {
+            float remaining = qb.GetTimeToCatch() - (Time.time - qb.GetTimeThrown());
+            horizon = Mathf.Clamp(remaining + 1f, 0.5f, ballPredictionTime);
+        }
+        int steps = Mathf.CeilToInt(horizon / step);
         predictedBallPath.Add(position);
         for (int i = 0; i < steps; i++)
         {
@@ -2860,7 +2903,7 @@ public class WR : MonoBehaviour
                 // ball, which was touching the WR's hand / body colliders, so it shoved him backwards and up while he ran.
                 HoldCaughtBall();
 
-                if (GameObject.Find("PivotAnchor") != null)
+                if (FindPivotAnchor() != null)
                 {
                     Vector3 targetPosition = leftHand.position + (new Vector3(leftArm.forward.x, 0, leftArm.forward.z) * 0.1705792f);
                     Vector3 targetPosition2 = leftHand.position + (new Vector3(leftArm.forward.x, 0, leftArm.forward.z) * (0.1705792f / 2f));
@@ -2885,9 +2928,9 @@ public class WR : MonoBehaviour
                             {
                                 Destroy(caughtFootball.GetComponent<FixedJoint>());
                             }
-                            if (GameObject.Find("PivotAnchor") != null)
+                            if (FindPivotAnchor() != null)
                             {
-                                Destroy(GameObject.Find("PivotAnchor"));
+                                Destroy(FindPivotAnchor());
                             }
                         }
                     }
@@ -3750,7 +3793,7 @@ public class WR : MonoBehaviour
                 // ball, which was touching the WR's hand / body colliders, so it shoved him backwards and up while he ran.
                 HoldCaughtBall();
 
-                if (GameObject.Find("PivotAnchor") != null)
+                if (FindPivotAnchor() != null)
                 {
                     Vector3 targetPosition = leftHand.position + (new Vector3(leftArm.forward.x, 0, leftArm.forward.z) * 0.1705792f);
                     Vector3 targetPosition2 = leftHand.position + (new Vector3(leftArm.forward.x, 0, leftArm.forward.z) * (0.1705792f / 2f));
@@ -3775,9 +3818,9 @@ public class WR : MonoBehaviour
                             {
                                 Destroy(caughtFootball.GetComponent<FixedJoint>());
                             }
-                            if (GameObject.Find("PivotAnchor") != null)
+                            if (FindPivotAnchor() != null)
                             {
-                                Destroy(GameObject.Find("PivotAnchor"));
+                                Destroy(FindPivotAnchor());
                             }
                         }
                     }
