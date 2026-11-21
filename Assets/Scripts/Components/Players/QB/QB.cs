@@ -38,7 +38,7 @@ public class QB : MonoBehaviour
     [Range(0f, 1f)] public float inAirCamCenterAtCatch = 1f;
     [Tooltip("Camera field of view (degrees) while the ball is in the air and after the catch. Smaller = more zoomed in.")]
     public float inAirCamFieldOfView = 42f;
-    [Tooltip("Normal camera lift right after the throw, in receiver heights. It eases to Raise At Catch as the ball reaches the WR. It always aims at the same point on him.")]
+    [Tooltip("Not used any more: the lift during the flight is now worked out from the ball (just enough to keep it at the top of the screen, between Raise At Catch and Max Raise At Throw).")]
     public float inAirCamRaiseAtThrow = 1.25f;
     [Tooltip("The MOST the camera may lift right after the throw (eases down to Raise At Catch over the flight). It only goes above the normal lift as much as needed to keep the top of the ball in the framing area.")]
     public float inAirCamMaxRaiseAtThrow = 2f;
@@ -584,7 +584,6 @@ public class QB : MonoBehaviour
         float range = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, eased) * unit;
         float maxBallRange = Mathf.Max(range, Mathf.Lerp(inAirCamMaxDistanceAtThrow, inAirCamDistanceAtCatch, eased) * unit);
 
-        // The camera sits inAirCamRaiseAtThrow -> AtCatch receiver heights higher and still aims at the focus.
         // Two distances: one that keeps the WR in the framing area, one that keeps the ball in it too. The camera
         // blends from the second to the first smoothly over the flight (fully by inAirCamBallFrameUntil), so it's one
         // steady move in on the WR / the throw's target instead of backing off for a high ball and then jumping in.
@@ -593,31 +592,49 @@ public class QB : MonoBehaviour
         float aspect = inAirCamera != null ? inAirCamera.aspect : 16f / 9f;
         float halfHeight = Mathf.Tan(fieldOfView * 0.5f * Mathf.Deg2Rad) * inAirCamFramingArea;
         float halfWidth = halfHeight * aspect;
-        // Raise: normally Raise At Throw -> At Catch over the flight. Max Raise At Throw (also easing to At Catch) is
-        // the most it may lift, and only as much as needed to fit the top of the ball in the framing area without
-        // backing off; if even the most isn't enough, it uses the most and backs off (up to the max distance).
+        // Raise: the camera keeps its horizontal place and lifts only as much as it takes to put the top of the ball
+        // at the top of the framing area (never below Raise At Catch, never above Max Raise At Throw, which eases
+        // down to Raise At Catch over the flight). A ball already in view, or behind / above the camera (it'll come
+        // into view on its own), needs no lift. Only if even the max lift can't show it does the camera back off,
+        // up to Max Distance At Throw.
         Collider ballCollider = football.GetComponentInChildren<Collider>();
         Vector3 ballTop = ballPosition + Vector3.up * (ballCollider != null ? ballCollider.bounds.extents.y : 0f);
-        float baseRaise = Mathf.Lerp(inAirCamRaiseAtThrow, inAirCamRaiseAtCatch, eased);
-        float maxRaise = Mathf.Max(baseRaise, Mathf.Lerp(inAirCamMaxRaiseAtThrow, inAirCamRaiseAtCatch, eased));
-        Vector3 raise = Vector3.up * (maxRaise * unit);
-        float receiverRange = range;
-        float ballRange = range;
-        const int raiseSteps = 12;
-        for (int k = 0; k <= raiseSteps; k++)
+        float minRaise = inAirCamRaiseAtCatch;
+        float maxRaise = Mathf.Max(minRaise, Mathf.Lerp(inAirCamMaxRaiseAtThrow, inAirCamRaiseAtCatch, eased));
+        Vector3 raise = Vector3.up * (minRaise * unit);
+        float receiverRange = InAirCameraRange(focus, lookDirection, raise, range, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
+        float raiseAmount = minRaise;
+        if (letGo < 1f && BallScreenHeight(focus, lookDirection, minRaise * unit, receiverRange, ballTop, halfHeight) > 1f)
         {
-            float raiseAmount = maxRaise > baseRaise ? Mathf.Lerp(baseRaise, maxRaise, k / (float)raiseSteps) : baseRaise;
-            raise = Vector3.up * (raiseAmount * unit);
-            receiverRange = InAirCameraRange(focus, lookDirection, raise, range, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
-            ballRange = letGo < 1f
-                ? Mathf.Max(receiverRange, Mathf.Min(maxBallRange,
-                    InAirCameraRange(focus, lookDirection, raise, receiverRange, true, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight)))
-                : receiverRange;
-            if (letGo >= 1f || maxRaise <= baseRaise || ballRange <= receiverRange * 1.0001f)
+            if (BallScreenHeight(focus, lookDirection, maxRaise * unit, receiverRange, ballTop, halfHeight) > 1f)
             {
-                break; // the ball's top fits at this raise without backing off (or no lift is allowed / needed)
+                raiseAmount = maxRaise; // can't lift enough: use the most, and back off below for the rest
+            }
+            else
+            {
+                // Smallest lift with the ball's top at (or just inside) the top of the framing area.
+                float low = minRaise, high = maxRaise;
+                for (int i = 0; i < 20; i++)
+                {
+                    float middle = 0.5f * (low + high);
+                    if (BallScreenHeight(focus, lookDirection, middle * unit, receiverRange, ballTop, halfHeight) > 1f)
+                    {
+                        low = middle;
+                    }
+                    else
+                    {
+                        high = middle;
+                    }
+                }
+                raiseAmount = high;
             }
         }
+        raise = Vector3.up * (raiseAmount * unit);
+        receiverRange = InAirCameraRange(focus, lookDirection, raise, range, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
+        float ballRange = letGo < 1f
+            ? Mathf.Max(receiverRange, Mathf.Min(maxBallRange,
+                InAirCameraRange(focus, lookDirection, raise, receiverRange, true, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight)))
+            : receiverRange;
         range = Mathf.Lerp(ballRange, receiverRange, letGo);
         desiredPosition = focus - lookDirection * range + raise;
         viewRotation = Quaternion.LookRotation(focus - desiredPosition, Vector3.up);
@@ -759,6 +776,22 @@ public class QB : MonoBehaviour
         {
             cam.fieldOfView = Mathf.Lerp(throwCameraStartFieldOfView, inAirCamFieldOfView, blend);
         }
+    }
+
+    /// <summary>
+    /// Where the top of the ball is on screen, vertically, for a camera lifted by raiseHeight at this distance and
+    /// aiming at the focus: 0 = middle, 1 = top of the framing area, above 1 = off the top. A ball behind the camera
+    /// or nearly overhead counts as 0 (lifting can't bring it in; it comes into view by itself).
+    /// </summary>
+    static float BallScreenHeight(Vector3 focus, Vector3 lookDirection, float raiseHeight, float range, Vector3 ballTop, float halfHeight)
+    {
+        Vector3 position = focus - lookDirection * range + Vector3.up * raiseHeight;
+        Vector3 local = Quaternion.Inverse(Quaternion.LookRotation(focus - position, Vector3.up)) * (ballTop - position);
+        if (local.z <= 0.1f * range)
+        {
+            return 0f;
+        }
+        return (local.y / local.z) / Mathf.Max(1e-4f, halfHeight);
     }
 
     /// <summary>
