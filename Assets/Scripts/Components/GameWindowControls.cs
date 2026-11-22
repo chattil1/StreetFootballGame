@@ -7,8 +7,9 @@ using UnityEngine.InputSystem;
 ///
 ///   Esc          - leave full screen (go to a window); Esc again goes back to full screen.
 ///   Shift + Esc  - quit the game (Cmd + Q also quits on a Mac).
-///   F3           - show / hide a frames-per-second counter.
-///   F5 / F6      - lower / raise the graphics quality level (shown with the FPS counter).
+///   I  (or F3)   - show / hide a frames-per-second counter.
+///   [ / ]  (or F5 / F6) - lower / raise the graphics quality level (shown with the FPS counter).
+/// (On a Mac the top-row F keys do Mission Control etc. unless you hold fn, hence the letter keys.)
 ///
 /// For speed it also caps the full-screen resolution at Max Full Screen Height (1080p by default). A 4K TV or a
 /// Retina laptop screen otherwise makes the game draw 4x as many pixels for little visible gain.
@@ -67,15 +68,15 @@ public class GameWindowControls : MonoBehaviour
                 GoFullScreen();
             }
         }
-        if (keyboard.f3Key.wasPressedThisFrame)
+        if (keyboard.iKey.wasPressedThisFrame || keyboard.f3Key.wasPressedThisFrame)
         {
             showFps = !showFps;
         }
-        if (keyboard.f5Key.wasPressedThisFrame)
+        if (keyboard.leftBracketKey.wasPressedThisFrame || keyboard.f5Key.wasPressedThisFrame)
         {
             QualitySettings.SetQualityLevel(Mathf.Max(0, QualitySettings.GetQualityLevel() - 1), true);
         }
-        if (keyboard.f6Key.wasPressedThisFrame)
+        if (keyboard.rightBracketKey.wasPressedThisFrame || keyboard.f6Key.wasPressedThisFrame)
         {
             QualitySettings.SetQualityLevel(Mathf.Min(QualitySettings.names.Length - 1, QualitySettings.GetQualityLevel() + 1), true);
         }
@@ -118,7 +119,7 @@ public class GameWindowControls : MonoBehaviour
             fpsStyle.normal.textColor = Color.yellow;
         }
         string quality = QualitySettings.names.Length > 0 ? QualitySettings.names[QualitySettings.GetQualityLevel()] : "";
-        GUI.Label(new Rect(12, 8, 600, 32), string.Format("{0:0} FPS  ({1:0.0} ms)   Quality: {2}  [F5/F6]   {3}x{4}",
+        GUI.Label(new Rect(12, 8, 600, 32), string.Format("{0:0} FPS  ({1:0.0} ms)   Quality: {2}  ( [ / ] )   {3}x{4}",
             fpsSmoothed, 1000f / Mathf.Max(1f, fpsSmoothed), quality, Screen.width, Screen.height), fpsStyle);
     }
 }
