@@ -2054,6 +2054,7 @@ public class WR : MonoBehaviour
                 ballBody.velocity = Vector3.zero;
                 ballBody.angularVelocity = Vector3.zero;
             }
+            ballBody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative; // the only mode a kinematic body allows (avoids a warning)
             ballBody.isKinematic = true;
             ballBody.detectCollisions = false;
         }
@@ -2063,6 +2064,7 @@ public class WR : MonoBehaviour
         {
             pivotBody.velocity = Vector3.zero;
             pivotBody.angularVelocity = Vector3.zero;
+            pivotBody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
             pivotBody.isKinematic = true;
             pivotBody.detectCollisions = false;
         }
