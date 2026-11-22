@@ -642,7 +642,7 @@ public class QB : MonoBehaviour
             if (inAirCamMaxFieldOfView > fieldOfView)
             {
                 Vector3 cameraAt = focus - lookDirection * receiverRange + lift;
-                Vector3 local = Quaternion.Inverse(Quaternion.LookRotation(focus - cameraAt, Vector3.up)) * (ballTop - cameraAt);
+                Vector3 local = Quaternion.Inverse(SafeLookRotation(focus - cameraAt, Vector3.up)) * (ballTop - cameraAt);
                 if (local.z > 0.1f * receiverRange)
                 {
                     float framing = Mathf.Max(0.05f, inAirCamFramingArea);
@@ -661,7 +661,7 @@ public class QB : MonoBehaviour
         solvedRaise = raiseAmount;
         solvedDistance = distance / Mathf.Max(1e-4f, unit);
         desiredPosition = focus - lookDirection * distance + Vector3.up * (raiseAmount * unit);
-        viewRotation = Quaternion.LookRotation(focus - desiredPosition, Vector3.up);
+        viewRotation = SafeLookRotation(focus - desiredPosition, Vector3.up);
     }
 
     /// <summary>
@@ -727,12 +727,23 @@ public class QB : MonoBehaviour
     static float BallScreenHeight(Vector3 focus, Vector3 lookDirection, float raiseHeight, float range, Vector3 ballTop, float halfHeight)
     {
         Vector3 position = focus - lookDirection * range + Vector3.up * raiseHeight;
-        Vector3 local = Quaternion.Inverse(Quaternion.LookRotation(focus - position, Vector3.up)) * (ballTop - position);
+        Vector3 local = Quaternion.Inverse(SafeLookRotation(focus - position, Vector3.up)) * (ballTop - position);
         if (local.z <= 0.1f * range)
         {
             return 0f;
         }
         return (local.y / local.z) / Mathf.Max(1e-4f, halfHeight);
+    }
+
+    /// <summary>LookRotation that returns the current/identity rotation for a zero vector instead of logging an error every frame.</summary>
+    static Quaternion SafeLookRotation(Vector3 forward, Vector3 up)
+    {
+        return forward.sqrMagnitude > 1e-10f ? Quaternion.LookRotation(forward, up) : Quaternion.identity;
+    }
+
+    static Quaternion SafeLookRotation(Vector3 forward)
+    {
+        return SafeLookRotation(forward, Vector3.up);
     }
 
     /// <summary>
@@ -746,7 +757,7 @@ public class QB : MonoBehaviour
         for (int i = 0; i < 120; i++)
         {
             Vector3 position = focus - lookDirection * range + raise;
-            Quaternion toView = Quaternion.Inverse(Quaternion.LookRotation(focus - position, Vector3.up));
+            Quaternion toView = Quaternion.Inverse(SafeLookRotation(focus - position, Vector3.up));
             if ((!includeBall || InAirCameraSees(toView, position, ballPosition, halfWidth, halfHeight)) &&
                 InAirCameraSees(toView, position, receiverPoint, halfWidth, halfHeight) &&
                 InAirCameraSees(toView, position, receiverSpot, halfWidth, halfHeight))
@@ -785,11 +796,11 @@ public class QB : MonoBehaviour
         Vector3 cameraRight = Vector3.Cross(Vector3.up, downfield);
         float pitch = Mathf.Clamp(inAirCamTilt, 2f, 85f);
         Vector3 lookDirection = Quaternion.AngleAxis(pitch, cameraRight) * downfield;
-        Quaternion viewRotation = Quaternion.LookRotation(lookDirection, Vector3.up);
+        Quaternion viewRotation = SafeLookRotation(lookDirection, Vector3.up);
         float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
         Vector3 catchSpotOffset = Vector3.up * (inAirCamAimHeight * unit) - lookDirection * (inAirCamDistanceAtCatch * unit) + Vector3.up * (inAirCamRaiseAtCatch * unit);
         // Same aim as the in-air camera at the catch spot: at inAirCamAimHeight on him, from the raised spot.
-        viewRotation = Quaternion.LookRotation(Vector3.up * (inAirCamAimHeight * unit) - catchSpotOffset, Vector3.up);
+        viewRotation = SafeLookRotation(Vector3.up * (inAirCamAimHeight * unit) - catchSpotOffset, Vector3.up);
 
         Vector3 receiverPosition = receiverObject.transform.position;
         Vector3 currentOffset = cameraTransform.position - receiverPosition;

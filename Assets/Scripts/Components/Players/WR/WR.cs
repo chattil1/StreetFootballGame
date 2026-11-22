@@ -2973,7 +2973,9 @@ public class WR : MonoBehaviour
                     Vector3 defaultHorizontal = new Vector3(0, 0f, defaultZValue).normalized;
                     //float rootOffset = Vector3.SignedAngle(inputVectorRootOffset, rootHorizontal, Vector3.up);
                     float rootOffset = Vector3.SignedAngle(defaultHorizontal, rootHorizontal, Vector3.up);
-                    Quaternion horOffsetLookRotation = Quaternion.LookRotation(inputVectorRootOffset);
+                    // Zero stick = zero vector: LookRotation then logs "Look rotation viewing vector is zero" every frame (thousands
+                    // of lines in a build's log, which slows it down). Use no rotation instead.
+                    Quaternion horOffsetLookRotation = inputVectorRootOffset.sqrMagnitude > 1e-8f ? Quaternion.LookRotation(inputVectorRootOffset) : Quaternion.identity;
                     Quaternion horOffsetRotation = Quaternion.AngleAxis(rootOffset, Vector3.up);
                     Quaternion expectedRotation = horOffsetRotation * horOffsetLookRotation;
                     //WE ALWAYS WANT THE EXPECTED FORWARD OF THE QUATERNION THAT WE CREATE MANUALLY
