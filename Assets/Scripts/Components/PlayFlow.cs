@@ -36,6 +36,7 @@ public class PlayFlow : MonoBehaviour
         DontDestroyOnLoad(flow);
         instance = flow.AddComponent<PlayFlow>();
         SceneManager.sceneLoaded += (scene, mode) => instance.ResetPlay();
+        instance.StartCoroutine(instance.CheckPlayersVisible(0));
     }
 
     /// <summary>Show a short result banner for a few seconds.</summary>
@@ -78,10 +79,67 @@ public class PlayFlow : MonoBehaviour
         }
     }
 
+    int loads;
+
     void ResetPlay()
     {
         interception = false;
         banner = null;
+        loads++;
+        if (loads > 1)
+        {
+            StartCoroutine(CheckPlayersVisible(loads - 1));
+        }
+    }
+
+    /// <summary>
+    /// A few seconds after the scene (re)loads, reports every UMA player's drawn mesh to the Console: whether the
+    /// renderer is on, its mesh, its materials / shaders / main textures, where it is and whether the camera can see
+    /// it. Used to find out why the players are invisible after Restart Play. Switches a renderer back on if it was
+    /// left off.
+    /// </summary>
+    System.Collections.IEnumerator CheckPlayersVisible(int restartNumber)
+    {
+        yield return new WaitForSeconds(4f);
+        Camera cam = Camera.main != null ? Camera.main : FindObjectOfType<Camera>();
+        var report = new System.Text.StringBuilder();
+        report.AppendLine("Player visibility check " + (restartNumber == 0 ? "(first load)" : "(after restart " + restartNumber + ")") + ":");
+        foreach (UMA.CharacterSystem.DynamicCharacterAvatar avatar in FindObjectsOfType<UMA.CharacterSystem.DynamicCharacterAvatar>())
+        {
+            SkinnedMeshRenderer[] renderers = avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            report.AppendLine("  " + avatar.name + " at " + avatar.transform.position + ", " + renderers.Length + " skinned renderer(s)");
+            foreach (SkinnedMeshRenderer smr in renderers)
+            {
+                Mesh mesh = smr.sharedMesh;
+                report.Append("    " + smr.name + ": enabled=" + smr.enabled + ", activeInHierarchy=" + smr.gameObject.activeInHierarchy
+                    + ", layer=" + LayerMask.LayerToName(smr.gameObject.layer)
+                    + ", cameraSeesLayer=" + (cam != null && (cam.cullingMask & (1 << smr.gameObject.layer)) != 0)
+                    + ", mesh=" + (mesh == null ? "NONE" : mesh.name + " (" + mesh.vertexCount + " verts)")
+                    + ", bounds center=" + smr.bounds.center + " size=" + smr.bounds.size
+                    + ", isVisible=" + smr.isVisible + ", rootBone=" + (smr.rootBone == null ? "NONE" : smr.rootBone.name)
+                    + ", bones=" + smr.bones.Length + ", materials:");
+                foreach (Material material in smr.sharedMaterials)
+                {
+                    if (material == null)
+                    {
+                        report.Append(" [NULL]");
+                        continue;
+                    }
+                    Texture main = material.HasProperty("_MainTex") ? material.GetTexture("_MainTex") : null;
+                    report.Append(" [" + material.name + ", shader=" + (material.shader == null ? "NONE" : material.shader.name)
+                        + ", supported=" + (material.shader != null && material.shader.isSupported)
+                        + ", mainTex=" + (main == null ? "NONE" : main.name + " " + main.width + "x" + main.height)
+                        + (material.HasProperty("_Color") ? ", color=" + material.GetColor("_Color") : "") + "]");
+                }
+                report.AppendLine();
+                if (!smr.enabled && !avatar.hide)
+                {
+                    smr.enabled = true;
+                    report.AppendLine("    -> renderer was off; switched it back on");
+                }
+            }
+        }
+        Debug.Log(report.ToString());
     }
 
     void Update()
