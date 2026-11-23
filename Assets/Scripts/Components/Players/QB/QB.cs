@@ -276,6 +276,44 @@ public class QB : MonoBehaviour
     public GameObject GetFootball() {
         return football;
     }
+    /// <summary>Set by the CB when he swats ("SWATTED by CB") or intercepts ("INTERCEPTED by CB") the pass.</summary>
+    private string passDefendedNote = null;
+    /// <summary>The defender who intercepted the pass (the camera follows him), or null.</summary>
+    public Transform interceptedBy = null;
+
+    /// <summary>Called by a defender who swatted or intercepted the pass (for the pass check log and the camera).</summary>
+    public void NotePassDefended(string what, Transform interceptor)
+    {
+        passDefendedNote = what;
+        if (interceptor != null)
+        {
+            interceptedBy = interceptor;
+        }
+    }
+
+    /// <summary>The spot the pass is aimed at (the receiver's catch palm when it arrives).</summary>
+    public Vector3 GetThrowTarget()
+    {
+        return throwingTargetPosition;
+    }
+
+    /// <summary>Which receiver the ball was thrown to (or will be, before the throw).</summary>
+    public GameObject GetTargetReceiver()
+    {
+        return throwBPerformed ? wrB : wrX;
+    }
+
+    /// <summary>The thrown ball's Rigidbody while it's flying free (not caught / held), else null.</summary>
+    public Rigidbody GetBallInFlight()
+    {
+        if (!thrown || parentFootballPosition == null)
+        {
+            return null;
+        }
+        Rigidbody ball = parentFootballPosition.GetComponent<Rigidbody>();
+        return ball != null && !ball.isKinematic ? ball : null;
+    }
+
     public bool GetIsThrown() {
         return thrown;
     }
@@ -783,10 +821,15 @@ public class QB : MonoBehaviour
         }
         GameObject receiverObject = throwBPerformed ? wrB : wrX;
         WR receiver = receiverObject != null ? receiverObject.GetComponent<WR>() : null;
-        if (receiver == null || receiver.caughtFootball == null)
+        bool intercepted = interceptedBy != null;
+        if (!intercepted && (receiver == null || receiver.caughtFootball == null))
         {
             afterCatchOffsetVelocity = Vector3.zero;
             return false;
+        }
+        if (intercepted)
+        {
+            receiverObject = interceptedBy.gameObject; // follow the defender who picked it off, the same way
         }
         Transform cameraTransform = mainCamera.transform;
         Camera followCamera = mainCamera.GetComponent<Camera>();
@@ -908,8 +951,8 @@ public class QB : MonoBehaviour
             passCheckHoldingCatch = holdingCatch;
             passCheckPlannedPalmMiss = Vector3.Distance(passCheckReceiver.GetLeftPalmCatchPosition(), ballBody.position);
         }
-        bool caught = passCheckReceiver.caughtFootball != null || ballBody.isKinematic;
-        if (caught || flightTime > timeToCatch + 0.5f)
+        bool caught = passCheckReceiver.caughtFootball != null;
+        if (caught || ballBody.isKinematic || passDefendedNote != null || flightTime > timeToCatch + 0.5f)
         {
             passCheckActive = false;
             float unit = Mathf.Max(0.01f, passCheckReceiver.GetUnitsPerMeter());
@@ -918,7 +961,7 @@ public class QB : MonoBehaviour
                 "Pass check ({0}): flight {1:0.00}s planned. When due, the ball was {2:0.0} units ({3:0.00} m) from the aimed spot (offset {4}). " +
                 "Closest to his left palm: {5:0.0} units ({6:0.00} m) at {7:0.00}s. Launch {8:0} units/s ({9:0} mph). " +
                 "Receiver speed at throw {10:0} units/s ({11:0.0} mph), when due {12:0} units/s ({13:0.0} mph).",
-                caught ? "CAUGHT" : "not caught", timeToCatch, passCheckTargetMiss, passCheckTargetMiss / unit, passCheckTargetOffset,
+                passDefendedNote ?? (caught ? "CAUGHT" : "not caught"), timeToCatch, passCheckTargetMiss, passCheckTargetMiss / unit, passCheckTargetOffset,
                 passCheckClosest, passCheckClosest / unit, passCheckClosestTime,
                 passCheckLaunchVelocity.magnitude, passCheckLaunchVelocity.magnitude / mph,
                 passCheckReceiverVelocity.magnitude, passCheckReceiverVelocity.magnitude / mph,
