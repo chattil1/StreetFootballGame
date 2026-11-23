@@ -2,12 +2,13 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
+/// (Named ManCoverageCB so it doesn't clash with your own CB script.)
 /// Cornerback in man-to-man coverage on one receiver (WRX by default).
 ///
-/// Setup: none needed. When the scene loads, if there's no CB yet, one is made from a copy of WRX (same UMA body,
+/// Setup: none needed. When the scene loads, if there's no ManCoverageCB yet, one is made from a copy of WRX (same UMA body,
 /// animator and physics) with the receiver's scripts removed, lined up Start Cushion Yards off him on the
 /// downfield side. To place him yourself, add this component to a GameObject that has the UMA character,
-/// Animator, Rigidbody and collider, and untick Auto Spawn on the copy (or set CB.AutoSpawn = false).
+/// Animator, Rigidbody and collider, and untick Auto Spawn on the copy (or set ManCoverageCB.AutoSpawn = false).
 ///
 /// Coverage: he mirrors the receiver with a short reaction delay (so hard cuts still win a step), staying Cushion
 /// Yards deeper and a little inside. When the ball is thrown to his man he breaks on it (after Ball Reaction Time),
@@ -17,7 +18,7 @@ using UnityEngine;
 /// dead: the receiver can't catch it). If it comes within Intercept Reach Meters while he's facing it, he catches
 /// it (Intercept Chance), then runs it back upfield.
 /// </summary>
-public class CB : MonoBehaviour
+public class ManCoverageCB : MonoBehaviour
 {
     public static bool AutoSpawn = true;
 
@@ -78,7 +79,7 @@ public class CB : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void SpawnOnSceneLoad()
     {
-        if (!AutoSpawn || FindObjectOfType<CB>() != null)
+        if (!AutoSpawn || FindObjectOfType<ManCoverageCB>() != null)
         {
             return;
         }
@@ -95,7 +96,7 @@ public class CB : MonoBehaviour
     /// every non-UMA script is removed, his hands are untagged (so they never count as the receiver's catch), and
     /// this component is added.
     /// </summary>
-    public static CB CreateFromReceiver(GameObject receiver)
+    public static ManCoverageCB CreateFromReceiver(GameObject receiver)
     {
         GameObject holder = new GameObject("CB spawn holder");
         holder.SetActive(false);
@@ -116,7 +117,7 @@ public class CB : MonoBehaviour
                 part.tag = "Untagged";
             }
         }
-        CB cb = copy.AddComponent<CB>();
+        ManCoverageCB cb = copy.AddComponent<ManCoverageCB>();
         cb.coveredReceiver = receiver.GetComponent<WR>();
         copy.transform.SetParent(null, true);
         Destroy(holder);
