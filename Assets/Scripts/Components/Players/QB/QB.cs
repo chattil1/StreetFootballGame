@@ -49,6 +49,8 @@ public class QB : MonoBehaviour
     public float inAirCamRaiseAtThrow = 1.25f;
     [Tooltip("The MOST the camera may lift right after the throw (eases down to Raise At Catch over the flight). It only goes above the normal lift as much as needed to keep the top of the ball in the framing area.")]
     public float inAirCamMaxRaiseAtThrow = 2f;
+    [Tooltip("Steepest the in-air camera may look down at the play (degrees). When the ball needs more room at the top of its arc, the camera backs off rather than climbing past this, so it never turns into a top-down view.")]
+    [Range(10f, 80f)] public float inAirCamMaxLookDownAngle = 45f;
     [Tooltip("How much higher the camera sits as the ball reaches the WR (and after the catch), in receiver heights.")]
     [UnityEngine.Serialization.FormerlySerializedAs("inAirCamRaise")]
     public float inAirCamRaiseAtCatch = 0.75f;
@@ -692,60 +694,71 @@ public class QB : MonoBehaviour
         }
         else
         {
+            // Every lift from Raise At Catch to Max Raise At Throw is tried; for each, the camera backs off (from
+            // the distance the WR needs, up to Max Distance At Throw) just until the top of the ball is inside the
+            // framing area. Of the ones that fit without looking down more steeply than Max Look Down Angle, the
+            // closest is used. (Before, it always lifted first; on 20-30 yard throws the top of the arc is about
+            // over the camera, where lifting can't bring the ball into view, so it climbed to Max Raise: a
+            // top-down view with the ball still off the top.)
             float baseRange = inAirCamDistanceAtCatch * unit;
             float minRaise = inAirCamRaiseAtCatch;
             float maxRaise = Mathf.Max(minRaise, inAirCamMaxRaiseAtThrow);
-            Vector3 lift = Vector3.up * (minRaise * unit);
-            float receiverRange = InAirCameraRange(focus, lookDirection, lift, baseRange, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
-
-            // 1. Lift, as little as needed for the top of the ball to be at the top of the framing area.
+            float maxLookDown = Mathf.Clamp(inAirCamMaxLookDownAngle, 1f, 89f);
+            const int steps = 32;
+            bool found = false;
+            float best = float.MaxValue;
             raiseAmount = minRaise;
-            if (BallScreenHeight(focus, lookDirection, minRaise * unit, receiverRange, ballTop, halfHeight) > 1f)
+            distance = InAirCameraRange(focus, lookDirection, Vector3.up * (minRaise * unit), baseRange, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
+            for (int i = 0; i <= steps; i++)
             {
-                if (BallScreenHeight(focus, lookDirection, maxRaise * unit, receiverRange, ballTop, halfHeight) > 1f)
+                float raise = Mathf.Lerp(minRaise, maxRaise, i / (float)steps);
+                Vector3 lift = Vector3.up * (raise * unit);
+                float receiverRange = InAirCameraRange(focus, lookDirection, lift, baseRange, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
+                float maxRange = Mathf.Max(receiverRange, inAirCamMaxDistanceAtThrow * unit);
+                float range = InAirCameraRange(focus, lookDirection, lift, receiverRange, true, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
+                if (range > maxRange * 1.0001f)
                 {
-                    raiseAmount = maxRaise;
+                    continue; // can't fit the ball at this lift
                 }
-                else
+                float lookDown = Mathf.Atan2(raise * unit, range) * Mathf.Rad2Deg;
+                if (i > 0 && lookDown > maxLookDown)
                 {
-                    float low = minRaise, high = maxRaise;
-                    for (int i = 0; i < 24; i++)
+                    continue;
+                }
+                float closeness = new Vector2(raise * unit, range).magnitude;
+                if (closeness < best)
+                {
+                    best = closeness;
+                    found = true;
+                    raiseAmount = raise;
+                    distance = range;
+                }
+            }
+
+            if (!found)
+            {
+                // Nothing fits at the normal field of view: from the furthest allowed spot at the steepest allowed
+                // lift, widen the field of view only as much as needed (up to Max Field Of View).
+                float maxRange = Mathf.Max(distance, inAirCamMaxDistanceAtThrow * unit);
+                raiseAmount = Mathf.Clamp(Mathf.Tan(maxLookDown * Mathf.Deg2Rad) * maxRange / Mathf.Max(1e-4f, unit), minRaise, maxRaise);
+                Vector3 lift = Vector3.up * (raiseAmount * unit);
+                distance = Mathf.Max(maxRange, InAirCameraRange(focus, lookDirection, lift, baseRange, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight));
+                if (inAirCamMaxFieldOfView > fieldOfView)
+                {
+                    Vector3 cameraAt = focus - lookDirection * distance + lift;
+                    Vector3 local = Quaternion.Inverse(SafeLookRotation(focus - cameraAt, Vector3.up)) * (ballTop - cameraAt);
+                    if (local.z > 0.1f * distance)
                     {
-                        float middle = 0.5f * (low + high);
-                        if (BallScreenHeight(focus, lookDirection, middle * unit, receiverRange, ballTop, halfHeight) > 1f)
-                        {
-                            low = middle;
-                        }
-                        else
-                        {
-                            high = middle;
-                        }
+                        float framing = Mathf.Max(0.05f, inAirCamFramingArea);
+                        float neededTan = Mathf.Max(Mathf.Abs(local.y / local.z), Mathf.Abs(local.x / local.z) / Mathf.Max(0.1f, aspect)) / framing;
+                        solvedFieldOfView = Mathf.Clamp(2f * Mathf.Atan(neededTan) * Mathf.Rad2Deg, fieldOfView, inAirCamMaxFieldOfView);
                     }
-                    raiseAmount = high;
+                    else
+                    {
+                        solvedFieldOfView = inAirCamMaxFieldOfView;
+                    }
                 }
             }
-            lift = Vector3.up * (raiseAmount * unit);
-            receiverRange = InAirCameraRange(focus, lookDirection, lift, baseRange, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
-
-            // 2. Widen the field of view, as little as still needed.
-            if (inAirCamMaxFieldOfView > fieldOfView)
-            {
-                Vector3 cameraAt = focus - lookDirection * receiverRange + lift;
-                Vector3 local = Quaternion.Inverse(SafeLookRotation(focus - cameraAt, Vector3.up)) * (ballTop - cameraAt);
-                if (local.z > 0.1f * receiverRange)
-                {
-                    float framing = Mathf.Max(0.05f, inAirCamFramingArea);
-                    float neededTan = Mathf.Max(Mathf.Abs(local.y / local.z), Mathf.Abs(local.x / local.z) / Mathf.Max(0.1f, aspect)) / framing;
-                    solvedFieldOfView = Mathf.Clamp(2f * Mathf.Atan(neededTan) * Mathf.Rad2Deg, fieldOfView, inAirCamMaxFieldOfView);
-                }
-                halfHeight = Mathf.Tan(solvedFieldOfView * 0.5f * Mathf.Deg2Rad) * inAirCamFramingArea;
-                halfWidth = halfHeight * aspect;
-            }
-
-            // 3. Back off, as little as still needed.
-            float maxRange = Mathf.Max(receiverRange, inAirCamMaxDistanceAtThrow * unit);
-            distance = Mathf.Max(receiverRange, Mathf.Min(maxRange,
-                InAirCameraRange(focus, lookDirection, lift, receiverRange, true, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight)));
         }
         solvedRaise = raiseAmount;
         solvedDistance = distance / Mathf.Max(1e-4f, unit);
@@ -824,7 +837,7 @@ public class QB : MonoBehaviour
         Vector3 local = Quaternion.Inverse(SafeLookRotation(focus - position, Vector3.up)) * (ballTop - position);
         if (local.z <= 0.1f * range)
         {
-            return 0f;
+            return local.y > 0f ? 10f : 0f; // above and over / behind the camera: off the top (lifting doesn't help)
         }
         return (local.y / local.z) / Mathf.Max(1e-4f, halfHeight);
     }
