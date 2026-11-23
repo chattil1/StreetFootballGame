@@ -43,6 +43,8 @@ public class QB : MonoBehaviour
     public float inAirCamMaxFieldOfView = 55f;
     private float throwFieldOfView = 0f;
     private float throwCameraApexProgress = 0f;
+    private float throwCameraSmoothTime = -1f; // smoothing used until the top of the arc (so the camera is in place by then)
+    private float flightCameraSettle = 0f;     // how far (0..1) the camera has eased from the throw values to the catch values
     [Tooltip("Worked out at each release (you can watch it change here in Play mode): the least lift, from Raise At Catch up to Max Raise At Throw, that puts the top of the ball at the top of the screen at the top of the throw's arc. Held until then, then eases to Raise At Catch.")]
     public float inAirCamRaiseAtThrow = 1.25f;
     [Tooltip("The MOST the camera may lift right after the throw (eases down to Raise At Catch over the flight). It only goes above the normal lift as much as needed to keep the top of the ball in the framing area.")]
@@ -587,9 +589,19 @@ public class QB : MonoBehaviour
         // Follow relative to the WR: smooth the camera's offset from him, not its world position, so a fast WR
         // (and a ~1 s pass) never leaves the camera trailing behind.
         Vector3 currentOffset = cameraTransform.position - receiverSpot;
-        Vector3 offset = Vector3.SmoothDamp(currentOffset, desiredPosition - receiverSpot, ref inAirCameraVelocity, Mathf.Max(0.01f, inAirCameraPositionSmoothTime));
+        // Until the top of the arc it eases in a little faster on short throws, so it has reached the worked-out
+        // height by the time the ball peaks (with 0.3 s smoothing it was still ~40% of the way short at the top of
+        // a 20-30 yard throw, so the peak went off the top of the screen).
+        float smoothTime = inAirCameraPositionSmoothTime;
+        if (progress < throwCameraApexProgress && throwCameraSmoothTime > 0f)
+        {
+            smoothTime = Mathf.Min(smoothTime, throwCameraSmoothTime);
+        }
+        Vector3 offset = Vector3.SmoothDamp(currentOffset, desiredPosition - receiverSpot, ref inAirCameraVelocity, Mathf.Max(0.01f, smoothTime));
         cameraTransform.position = receiverSpot + offset;
-        float turn = 1f - Mathf.Exp(-inAirCameraTurnSpeed * Time.deltaTime);
+        float turnSpeed = progress < throwCameraApexProgress && throwCameraSmoothTime > 0f
+            ? Mathf.Max(inAirCameraTurnSpeed, 1f / throwCameraSmoothTime) : inAirCameraTurnSpeed;
+        float turn = 1f - Mathf.Exp(-turnSpeed * Time.deltaTime);
         cameraTransform.rotation = Quaternion.Slerp(cameraTransform.rotation, viewRotation, turn);
         if (inAirCamera != null)
         {
@@ -649,6 +661,30 @@ public class QB : MonoBehaviour
             // Hold the throw values until the top of the arc, then ease to the catch values.
             float settle = progress <= throwCameraApexProgress ? 0f
                 : Mathf.SmoothStep(0f, 1f, (progress - throwCameraApexProgress) / Mathf.Max(0.01f, 1f - throwCameraApexProgress));
+            // Coming down from the throw values is held back while that would put the (still high) ball off the
+            // top of the screen; it never goes back up once it has come down.
+            if (settle > flightCameraSettle)
+            {
+                if (BallScreenHeightAtSettle(settle, focus, lookDirection, unit, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight) > 1f)
+                {
+                    float low = flightCameraSettle, high = settle;
+                    for (int i = 0; i < 10; i++)
+                    {
+                        float middle = 0.5f * (low + high);
+                        if (BallScreenHeightAtSettle(middle, focus, lookDirection, unit, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight) > 1f)
+                        {
+                            high = middle;
+                        }
+                        else
+                        {
+                            low = middle;
+                        }
+                    }
+                    settle = low;
+                }
+                flightCameraSettle = settle;
+            }
+            settle = flightCameraSettle;
             raiseAmount = Mathf.Lerp(inAirCamRaiseAtThrow, inAirCamRaiseAtCatch, settle);
             distance = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, settle) * unit;
             Vector3 lift = Vector3.up * (raiseAmount * unit);
@@ -756,13 +792,29 @@ public class QB : MonoBehaviour
             return fieldOfView;
         }
         float apexTime = Mathf.Clamp(launchVelocity.y / gravity, 0f, timeToCatch);
-        Vector3 apex = releasePosition + new Vector3(launchVelocity.x * apexTime, launchVelocity.y * apexTime - 0.5f * gravity * apexTime * apexTime, launchVelocity.z * apexTime);
-        Vector3 receiverShift = receiver != null ? receiver.PredictRunDisplacement(releaseDelay + apexTime) : Vector3.zero;
         Camera cam = mainCamera.GetComponent<Camera>();
         float unit = inAirCameraUnit > 0f ? inAirCameraUnit : MeasurePlayerHeight(receiverObject);
         throwCameraApexProgress = apexTime / timeToCatch;
-        ComputeInAirCameraPose(receiverObject, apex, throwCameraApexProgress, unit, cam, inAirCamFieldOfView, true, receiverShift,
-            out _, out _, out _, out fieldOfView, out float raiseAtThrow, out float distanceAtThrow);
+        throwCameraSmoothTime = apexTime > 0f ? apexTime / 4f : -1f;
+        flightCameraSettle = 0f;
+
+        // Not just the apex: the ball on the way up to it is checked too (the camera's aim moves along with the
+        // flight, so on a shorter throw a point before the top can sit higher on screen than the top itself).
+        // The biggest lift / field of view / distance any of them needs is used for the whole climb.
+        float raiseAtThrow = inAirCamRaiseAtCatch, distanceAtThrow = inAirCamDistanceAtCatch;
+        fieldOfView = inAirCamFieldOfView;
+        float[] fractions = { 0.5f, 0.65f, 0.8f, 0.9f, 1f };
+        foreach (float fraction in fractions)
+        {
+            float t = apexTime * fraction;
+            Vector3 point = releasePosition + new Vector3(launchVelocity.x * t, launchVelocity.y * t - 0.5f * gravity * t * t, launchVelocity.z * t);
+            Vector3 receiverShift = receiver != null ? receiver.PredictRunDisplacement(releaseDelay + t) : Vector3.zero;
+            ComputeInAirCameraPose(receiverObject, point, t / timeToCatch, unit, cam, inAirCamFieldOfView, true, receiverShift,
+                out _, out _, out _, out float pointFieldOfView, out float pointRaise, out float pointDistance);
+            raiseAtThrow = Mathf.Max(raiseAtThrow, pointRaise);
+            distanceAtThrow = Mathf.Max(distanceAtThrow, pointDistance);
+            fieldOfView = Mathf.Max(fieldOfView, pointFieldOfView);
+        }
         inAirCamRaiseAtThrow = raiseAtThrow;
         inAirCamDistanceAtThrow = distanceAtThrow;
         if (cam != null)
@@ -786,6 +838,16 @@ public class QB : MonoBehaviour
             return 0f;
         }
         return (local.y / local.z) / Mathf.Max(1e-4f, halfHeight);
+    }
+
+    /// <summary>The ball's screen height (as BallScreenHeight) with the camera eased this far (0..1) from the throw values to the catch values.</summary>
+    float BallScreenHeightAtSettle(float settle, Vector3 focus, Vector3 lookDirection, float unit, Vector3 ballTop,
+        Vector3 receiverPoint, Vector3 receiverSpot, float halfWidth, float halfHeight)
+    {
+        float raise = Mathf.Lerp(inAirCamRaiseAtThrow, inAirCamRaiseAtCatch, settle) * unit;
+        float range = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, settle) * unit;
+        range = InAirCameraRange(focus, lookDirection, Vector3.up * raise, range, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
+        return BallScreenHeight(focus, lookDirection, raise, range, ballTop, halfHeight);
     }
 
     /// <summary>LookRotation that returns the current/identity rotation for a zero vector instead of logging an error every frame.</summary>

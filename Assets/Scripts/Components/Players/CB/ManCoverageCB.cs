@@ -87,13 +87,22 @@ public class ManCoverageCB : MonoBehaviour
     [Range(0f, 2f)] public float tackleDownward = 0.6f;
     [Tooltip("Spin (radians per second) added to tip him over towards the ground.")]
     public float tackleSpin = 3.5f;
-    [Tooltip("Seconds he keeps driving through the receiver after the hit.")]
-    public float driveSeconds = 0.4f;
+    [Tooltip("Seconds he takes to close the last gap and wrap his arms around the receiver after the hit.")]
+    public float wrapSeconds = 0.12f;
+    [Tooltip("How close (meters, real size) his chest gets to the receiver when he wraps him up.")]
+    public float wrapChestGapMeters = 0.3f;
+    [Tooltip("Extra drive (meters per second, real size) the two of them get from his legs as he wraps up, in the direction of the hit.")]
+    public float wrapDriveMetersPerSecond = 1.5f;
 
     QB qb;
     Rigidbody body;
     bool tackled;
     float tackleTime;
+    bool wrapped;
+    Rigidbody tackledReceiverBody;
+    Vector3 tackleDirection;
+    Vector3 wrapLeftLocal, wrapRightLocal;   // where his hands lock, in the receiver's own space (they go down with him)
+    float wrapHeight;                        // height on the receiver (above his center of gravity) he wraps
     Animator animator;
     Vector3 downfield = Vector3.forward;
     bool started;
@@ -270,10 +279,14 @@ public class ManCoverageCB : MonoBehaviour
 
         if (tackled)
         {
-            // Drive through him for a moment, then stop.
-            wantVelocity = Time.time - tackleTime < driveSeconds ? Vector3.ProjectOnPlane(body.velocity, Vector3.up) : Vector3.zero;
+            TackleStep();
+            if (animator != null)
+            {
+                animator.speed = Mathf.MoveTowards(animator.speed, wrapped ? 0f : baseAnimatorSpeed, 4f * Time.fixedDeltaTime);
+            }
+            return;
         }
-        else if (coveredReceiver.caughtFootball != null)
+        if (coveredReceiver.caughtFootball != null)
         {
             planning = false;
             wantVelocity = PursueAndTackle(topSpeed * breakSpeedMultiplier);
@@ -519,8 +532,75 @@ public class ManCoverageCB : MonoBehaviour
         Vector3 centerOfGravity = receiverBody != null ? receiverBody.worldCenterOfMass : coveredReceiver.transform.position;
         Vector3 hitPoint = centerOfGravity + Vector3.up * (tackleHitHeight * coveredReceiver.GetPlayerHeightUnits());
         Vector3 spin = Vector3.Cross(Vector3.up, direction) * tackleSpin;
+
+        // Where his arms lock: around the receiver's back at the hit height, hands meeting behind him.
+        tackledReceiverBody = receiverBody;
+        tackleDirection = direction;
+        float height = coveredReceiver.GetPlayerHeightUnits();
+        wrapHeight = 0.5f * tackleHitHeight * height;
+        Vector3 wrapCenter = centerOfGravity + Vector3.up * wrapHeight + direction * (0.15f * unitsPerMeter);
+        Vector3 across = Vector3.Cross(Vector3.up, direction).normalized;
+        wrapLeftLocal = coveredReceiver.transform.InverseTransformPoint(wrapCenter - across * (0.09f * unitsPerMeter));
+        wrapRightLocal = coveredReceiver.transform.InverseTransformPoint(wrapCenter + across * (0.09f * unitsPerMeter));
+        // The two bodies are about to overlap (chest to chest, arms around him): no collisions between them.
+        foreach (Collider mine in GetComponentsInChildren<Collider>())
+        {
+            foreach (Collider his in coveredReceiver.GetComponentsInChildren<Collider>())
+            {
+                Physics.IgnoreCollision(mine, his, true);
+            }
+        }
+        planning = false;
+        releaseStart = -1f;
+
         coveredReceiver.BeTackled(deltaVelocity, hitPoint, spin);
         PlayFlow.ShowBanner("TACKLED");
+    }
+
+    /// <summary>
+    /// After the hit: for Wrap Seconds he closes the last gap, chest to the receiver at the hit height, matching
+    /// his fall; then he's locked onto him (a fixed joint, real-size gravity) and the two go down together, with
+    /// a last drive from his legs. From there physics takes them both to the turf.
+    /// </summary>
+    void TackleStep()
+    {
+        if (wrapped || tackledReceiverBody == null)
+        {
+            return;
+        }
+        float unitsPerMeter = UnitsPerMeter();
+        float remaining = wrapSeconds - (Time.time - tackleTime);
+        Vector3 receiverCenter = tackledReceiverBody.worldCenterOfMass;
+        float chestHeight = armLength > 0f ? shoulderHeight - 0.3f * armLength : 0.7f * coveredReceiver.GetPlayerHeightUnits();
+        Vector3 wantPivot = receiverCenter + Vector3.up * wrapHeight - tackleDirection * (wrapChestGapMeters * unitsPerMeter) - Vector3.up * chestHeight;
+        wantPivot.y = Mathf.Max(wantPivot.y, groundY);
+        if (remaining > Time.fixedDeltaTime * 0.5f)
+        {
+            Vector3 velocity = tackledReceiverBody.velocity + (wantPivot - body.position) / remaining;
+            float dragKeep = Mathf.Max(0.05f, 1f - body.drag * Time.fixedDeltaTime);
+            float unityGravityThisStep = body.useGravity ? -Physics.gravity.y * Time.fixedDeltaTime : 0f;
+            body.velocity = (velocity + Vector3.up * unityGravityThisStep) / dragKeep;
+            body.MoveRotation(Quaternion.RotateTowards(body.rotation, Quaternion.LookRotation(tackleDirection, Vector3.up), 720f * Time.fixedDeltaTime));
+            return;
+        }
+
+        // Wrap him up: from here they're one body.
+        wrapped = true;
+        body.position = wantPivot;
+        body.constraints = RigidbodyConstraints.None;
+        Vector3 drive = (tackleDirection + Vector3.down * 0.3f).normalized * (wrapDriveMetersPerSecond * unitsPerMeter);
+        tackledReceiverBody.velocity += drive;
+        body.velocity = tackledReceiverBody.velocity;
+        body.angularVelocity = tackledReceiverBody.angularVelocity;
+        FixedJoint hold = gameObject.AddComponent<FixedJoint>();
+        hold.connectedBody = tackledReceiverBody;
+        hold.enableCollision = false;
+        TackledBody fall = gameObject.AddComponent<TackledBody>();
+        fall.gravityMultiplier = Mathf.Max(1f, unitsPerMeter);
+        if (animator != null)
+        {
+            animator.SetBool("runningForward", false);
+        }
     }
 
     /// <summary>Velocity to stay with the receiver: mirror where he was reactionTime ago, a cushion deeper and inside.</summary>
@@ -694,9 +774,14 @@ public class ManCoverageCB : MonoBehaviour
         {
             return;
         }
-        if (!leaping && !securing && armWeight < 0.01f)
+        if (!leaping && !securing && !tackled && armWeight < 0.01f)
         {
             MeasureArms();
+        }
+        if (tackled)
+        {
+            WrapArms();
+            return;
         }
 
         float unitsPerMeter = UnitsPerMeter();
@@ -754,6 +839,18 @@ public class ManCoverageCB : MonoBehaviour
                  leftUpper.position + (-transform.right + Vector3.down * 0.8f + back * 0.3f) * armLength, armWeight);
         SolveArm(rightUpper, rightLower, rightHandBone, ballSpot + side * halfBall + behind,
                  rightUpper.position + (transform.right + Vector3.down * 0.8f + back * 0.3f) * armLength, armWeight);
+    }
+
+    /// <summary>Tackle: both arms reach around the receiver's back to where his hands lock, and stay locked as they fall.</summary>
+    void WrapArms()
+    {
+        armWeight = Mathf.SmoothDamp(armWeight, 1f, ref armWeightVelocity, Mathf.Max(0.02f, 0.5f * wrapSeconds));
+        Transform receiver = coveredReceiver.transform;
+        Vector3 down = -transform.up;
+        SolveArm(leftUpper, leftLower, leftHandBone, receiver.TransformPoint(wrapLeftLocal),
+                 leftUpper.position + (-transform.right + down * 0.3f) * armLength, armWeight);
+        SolveArm(rightUpper, rightLower, rightHandBone, receiver.TransformPoint(wrapRightLocal),
+                 rightUpper.position + (transform.right + down * 0.3f) * armLength, armWeight);
     }
 
     /// <summary>The hands' target relative to his body, eased so a changing plan never snaps his arms.</summary>
