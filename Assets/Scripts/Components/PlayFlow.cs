@@ -93,54 +93,64 @@ public class PlayFlow : MonoBehaviour
 
     /// <summary>
     /// Runs as each scene loads, before the UMA players build:
-    ///  - Points UMA at this scene's own UMA context (UMA_GLIB). After a reload UMA could otherwise pick up a
-    ///    leftover context (e.g. the hidden editor-time one UMA makes in the Editor), whose generator doesn't build
-    ///    for this scene.
+    ///  - Makes sure UMA has a real context + generator (UMA_GLIB). The scene doesn't have one saved in it: on the
+    ///    first Play in the Editor the players build with UMA's hidden editor-time context, which is "don't save"
+    ///    and so is gone after a scene reload, leaving the reloaded players nothing to build with. So if the scene
+    ///    has no UMA_GLIB of its own, one is made from Resources/Prefabs/UMA_GLIB_Runtime and kept across reloads
+    ///    (DontDestroyOnLoad). This also covers builds, where the editor context never exists.
     ///  - Makes every UMA generator turn its texture atlases into normal textures (Convert Render Texture). As
     ///    render textures they're GPU-only and can come back empty after a scene reload or a window / resolution
     ///    change (Metal), which leaves the players' bodies invisible.
     /// </summary>
-    static UMA.UMAContextBase keptContext;
+    static UMA.UMAContextBase runtimeContext;
+
+    static bool IsEditorOnlyContext(UMA.UMAContextBase context)
+    {
+        Transform root = context.transform.root;
+        return root.name == "UMAEditorContext" || (root.gameObject.hideFlags & HideFlags.DontSave) != 0;
+    }
 
     static void PrepareUMA()
     {
         UMA.UMAContextBase sceneContext = null;
         foreach (UMA.UMAContextBase context in Resources.FindObjectsOfTypeAll<UMA.UMAContextBase>())
         {
-            if (context != null && context != keptContext && context.gameObject.scene == SceneManager.GetActiveScene() && context.isActiveAndEnabled)
+            if (context != null && context != runtimeContext && context.gameObject.scene == SceneManager.GetActiveScene()
+                && context.isActiveAndEnabled && !IsEditorOnlyContext(context))
             {
                 sceneContext = context;
                 break;
             }
         }
 
-        // Keep the UMA context (UMA_GLIB) alive across Restart Play. The scene that gets reloaded is the one saved
-        // on disk, and if that copy has no UMA_GLIB (added but not saved, or added only while in Play mode) the
-        // reloaded players have no context / generator and never build their bodies. So the first context we see
-        // is moved out of the scene (DontDestroyOnLoad) and reused after every reload. If a reloaded scene does
-        // bring its own active context, that one is used and the kept one is retired.
         if (sceneContext != null)
         {
-            if (keptContext != null && keptContext != sceneContext)
-            {
-                Destroy(keptContext.transform.root.gameObject);
-            }
-            keptContext = sceneContext;
-            Transform root = sceneContext.transform.root;
-            if (root.GetComponent<PlayFlow>() == null)
-            {
-                DontDestroyOnLoad(root.gameObject);
-            }
-        }
-        if (keptContext != null)
-        {
-            UMA.UMAContextBase.Instance = keptContext;
+            UMA.UMAContextBase.Instance = sceneContext;
         }
         else
         {
-            Debug.LogWarning("PlayFlow: no active UMA context (UMA_GLIB) found. The players can't build their bodies - " +
-                             "add the UMA_GLIB prefab to the scene and save the scene.");
+            if (runtimeContext == null)
+            {
+                GameObject prefab = Resources.Load<GameObject>("Prefabs/UMA_GLIB_Runtime");
+                if (prefab == null)
+                {
+                    Debug.LogError("PlayFlow: Resources/Prefabs/UMA_GLIB_Runtime is missing, so the players can't build their bodies. " +
+                                   "Add the UMA_GLIB prefab to the scene and save the scene.");
+                }
+                else
+                {
+                    GameObject glib = Instantiate(prefab);
+                    glib.name = "UMA_GLIB (kept across restarts)";
+                    DontDestroyOnLoad(glib);
+                    runtimeContext = glib.GetComponentInChildren<UMA.UMAContextBase>();
+                }
+            }
+            if (runtimeContext != null)
+            {
+                UMA.UMAContextBase.Instance = runtimeContext;
+            }
         }
+
         foreach (UMA.UMAGeneratorBase generator in Resources.FindObjectsOfTypeAll<UMA.UMAGeneratorBase>())
         {
             if (generator != null && generator.gameObject.scene.IsValid())
