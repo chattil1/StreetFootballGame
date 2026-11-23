@@ -27,7 +27,13 @@ public class FieldScaler : MonoBehaviour
     float startTime;
     bool done;
 
-    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    static void HookSceneLoads()
+    {
+        // Every time a scene loads (including Restart Play, which reloads it), not just the first time.
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded += (scene, mode) => CreateOnSceneLoad();
+    }
+
     static void CreateOnSceneLoad()
     {
         if (!Enabled || FindObjectOfType<FieldScaler>() != null)

@@ -1948,6 +1948,44 @@ public class WR : MonoBehaviour
         rb.AddForce(Physics.gravity * (multiplier - 1f), ForceMode.Acceleration);
     }
 
+    /// <summary>True once he's been tackled: his scripts stop and his body falls.</summary>
+    public bool IsTackled { get; private set; }
+
+    /// <summary>
+    /// Tackled: stop all of his control (this script switches off, his animation freezes), keep the ball in his hand,
+    /// let his body rotate freely, and hit him: deltaVelocity (a change of speed, independent of his mass) applied
+    /// at hitPoint (above his center of gravity, so it also tips him over), plus spin (radians/second) so he's
+    /// driven down to the turf. Real-size gravity is applied while he falls (TackledBody).
+    /// </summary>
+    public void BeTackled(Vector3 deltaVelocity, Vector3 hitPoint, Vector3 spin)
+    {
+        if (IsTackled)
+        {
+            return;
+        }
+        IsTackled = true;
+        Rigidbody wrBody = GetComponent<Rigidbody>();
+        if (caughtFootball != null && leftHand != null)
+        {
+            caughtFootball.transform.SetParent(leftHand, true); // carried down with him
+        }
+        Animator wrAnimator = GetComponent<Animator>();
+        if (wrAnimator != null)
+        {
+            wrAnimator.SetBool("runningForward", false);
+            wrAnimator.speed = 0f; // freeze the pose; the whole body falls
+        }
+        if (wrBody != null)
+        {
+            wrBody.constraints = RigidbodyConstraints.None;
+            wrBody.AddForceAtPosition(deltaVelocity * wrBody.mass, hitPoint, ForceMode.Impulse);
+            wrBody.angularVelocity += spin;
+            TackledBody fall = gameObject.AddComponent<TackledBody>();
+            fall.gravityMultiplier = Mathf.Max(1f, GetUnitsPerMeter());
+        }
+        enabled = false;
+    }
+
     private SkinnedMeshRenderer builtCharacterRenderer;
 
     /// <summary>

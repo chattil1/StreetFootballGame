@@ -30,23 +30,23 @@ public class ManCoverageCB : MonoBehaviour
     [Tooltip("Yards off the receiver (downfield) at the start of the play.")]
     public float startCushionYards = 6f;
     [Tooltip("Yards he tries to stay deeper (downfield) than the receiver while covering. Smaller = tighter.")]
-    public float cushionYards = 1f;
+    public float cushionYards = 0.75f;
     [Tooltip("Yards he stays to the inside (towards the middle of the field) of the receiver.")]
-    public float insideLeverageYards = 0.6f;
+    public float insideLeverageYards = 0.5f;
     [Tooltip("Seconds behind the receiver his reactions are (higher = the receiver gets more separation on cuts).")]
-    public float reactionTime = 0.2f;
+    public float reactionTime = 0.12f;
     [Tooltip("His top speed as a fraction of the receiver's top speed.")]
-    [Range(0.5f, 1.3f)] public float speedRatio = 0.98f;
+    [Range(0.5f, 1.3f)] public float speedRatio = 1f;
     [Tooltip("His acceleration as a fraction of the receiver's.")]
-    [Range(0.5f, 2f)] public float accelerationRatio = 1.1f;
+    [Range(0.5f, 2f)] public float accelerationRatio = 1.2f;
 
     [Header("Playing the ball")]
     [Tooltip("Seconds after the throw before he breaks on the ball.")]
-    public float ballReactionTime = 0.25f;
+    public float ballReactionTime = 0.15f;
     [Tooltip("Speed multiplier while he breaks on the ball (an all-out sprint).")]
     public float breakSpeedMultiplier = 1.05f;
     [Tooltip("How far (meters, real size) from his hands he can knock the ball away. About an arm's length plus a reach.")]
-    public float swatReachMeters = 0.9f;
+    public float swatReachMeters = 1f;
     [Tooltip("Within this (meters) of his hands, and facing the ball, he can intercept it instead.")]
     public float interceptReachMeters = 0.45f;
     [Tooltip("Chance (0..1) he holds on for the interception when he's in position for one; otherwise he swats it.")]
@@ -56,8 +56,24 @@ public class ManCoverageCB : MonoBehaviour
     [Tooltip("Seconds he runs the interception back before stopping.")]
     public float returnSeconds = 4f;
 
+    [Header("Tackling")]
+    [Tooltip("After the catch he chases the receiver; within this (meters, real size) he tackles him.")]
+    public float tackleReachMeters = 1f;
+    [Tooltip("How hard the hit is: the change of speed (meters per second, real size) given to the receiver, on top of the CB's own speed into him.")]
+    public float tackleHitMetersPerSecond = 3f;
+    [Tooltip("How far above the receiver's center of gravity the hit lands, as a fraction of his height (higher = he tips over more).")]
+    [Range(0f, 0.5f)] public float tackleHitHeight = 0.2f;
+    [Tooltip("Extra downward share of the hit (driving him into the turf).")]
+    [Range(0f, 2f)] public float tackleDownward = 0.6f;
+    [Tooltip("Spin (radians per second) added to tip him over towards the ground.")]
+    public float tackleSpin = 3.5f;
+    [Tooltip("Seconds he keeps driving through the receiver after the hit.")]
+    public float driveSeconds = 0.4f;
+
     QB qb;
     Rigidbody body;
+    bool tackled;
+    float tackleTime;
     Animator animator;
     Vector3 downfield = Vector3.forward;
     bool started;
@@ -76,7 +92,13 @@ public class ManCoverageCB : MonoBehaviour
         public Vector3 velocity;
     }
 
-    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    static void HookSceneLoads()
+    {
+        // Every time a scene loads (including Restart Play, which reloads it), not just the first time.
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded += (scene, mode) => SpawnOnSceneLoad();
+    }
+
     static void SpawnOnSceneLoad()
     {
         if (!AutoSpawn || FindObjectOfType<ManCoverageCB>() != null)
@@ -182,7 +204,16 @@ public class ManCoverageCB : MonoBehaviour
         float acceleration = coveredReceiver.GetRunAcceleration() * accelerationRatio;
         Vector3 wantVelocity;
 
-        if (intercepted)
+        if (tackled)
+        {
+            // Drive through him for a moment, then stop.
+            wantVelocity = Time.time - tackleTime < driveSeconds ? Vector3.ProjectOnPlane(body.velocity, Vector3.up) : Vector3.zero;
+        }
+        else if (coveredReceiver.caughtFootball != null)
+        {
+            wantVelocity = PursueAndTackle(topSpeed * breakSpeedMultiplier);
+        }
+        else if (intercepted)
         {
             // Run it back upfield for a few seconds, then stop.
             wantVelocity = Time.time - interceptTime < returnSeconds ? -downfield * topSpeed : Vector3.zero;
@@ -221,6 +252,49 @@ public class ManCoverageCB : MonoBehaviour
             animator.SetBool("runningForward", next.magnitude > 0.15f * Mathf.Max(1f, topSpeed));
         }
         TrackBall();
+    }
+
+    /// <summary>
+    /// After the catch: take a pursuit angle (to where he'll be when the CB gets there, up to a second ahead) and
+    /// tackle him once he's within reach.
+    /// </summary>
+    Vector3 PursueAndTackle(float topSpeed)
+    {
+        Rigidbody receiverBody = coveredReceiver.GetComponent<Rigidbody>();
+        Vector3 receiverVelocity = receiverBody != null ? Vector3.ProjectOnPlane(receiverBody.velocity, Vector3.up) : Vector3.zero;
+        Vector3 toReceiver = Vector3.ProjectOnPlane(coveredReceiver.transform.position - transform.position, Vector3.up);
+        if (toReceiver.magnitude <= tackleReachMeters * UnitsPerMeter() + 0.1f * coveredReceiver.GetPlayerHeightUnits())
+        {
+            Tackle(receiverBody, toReceiver);
+            return Vector3.ProjectOnPlane(body.velocity, Vector3.up);
+        }
+        float lead = Mathf.Min(1f, toReceiver.magnitude / Mathf.Max(1f, topSpeed));
+        Vector3 aim = coveredReceiver.transform.position + receiverVelocity * lead;
+        Vector3 toAim = Vector3.ProjectOnPlane(aim - transform.position, Vector3.up);
+        return toAim.sqrMagnitude > 1e-4f ? toAim.normalized * topSpeed : Vector3.zero;
+    }
+
+    /// <summary>
+    /// The hit: aimed through his center of gravity, landing a little above it (tackleHitHeight of his height) and
+    /// angled down, so it both drives him back and tips his body over towards the turf; plus a spin about the axis
+    /// that rolls his top in the direction of the hit.
+    /// </summary>
+    void Tackle(Rigidbody receiverBody, Vector3 toReceiver)
+    {
+        tackled = true;
+        tackleTime = Time.time;
+        float unitsPerMeter = UnitsPerMeter();
+        Vector3 direction = toReceiver.sqrMagnitude > 1e-4f ? toReceiver.normalized : transform.forward;
+        Vector3 myVelocity = Vector3.ProjectOnPlane(body.velocity, Vector3.up);
+        Vector3 receiverVelocity = receiverBody != null ? Vector3.ProjectOnPlane(receiverBody.velocity, Vector3.up) : Vector3.zero;
+        float closing = Mathf.Max(0f, Vector3.Dot(myVelocity - receiverVelocity, direction));
+        float hit = closing + tackleHitMetersPerSecond * unitsPerMeter;
+        Vector3 deltaVelocity = (direction + Vector3.down * tackleDownward).normalized * hit;
+        Vector3 centerOfGravity = receiverBody != null ? receiverBody.worldCenterOfMass : coveredReceiver.transform.position;
+        Vector3 hitPoint = centerOfGravity + Vector3.up * (tackleHitHeight * coveredReceiver.GetPlayerHeightUnits());
+        Vector3 spin = Vector3.Cross(Vector3.up, direction) * tackleSpin;
+        coveredReceiver.BeTackled(deltaVelocity, hitPoint, spin);
+        PlayFlow.ShowBanner("TACKLED");
     }
 
     /// <summary>Velocity to stay with the receiver: mirror where he was reactionTime ago, a cushion deeper and inside.</summary>
@@ -342,6 +416,7 @@ public class ManCoverageCB : MonoBehaviour
         ball.angularVelocity = Random.onUnitSphere * 20f;
         MakeBallDead(ball);
         qb.NotePassDefended("SWATTED by the CB", null);
+        PlayFlow.ShowBanner("PASS BROKEN UP");
     }
 
     void Intercept(Rigidbody ball)
@@ -364,6 +439,7 @@ public class ManCoverageCB : MonoBehaviour
         ball.transform.SetParent(carryHand, true);
         ball.transform.position = carryHand.position;
         qb.NotePassDefended("INTERCEPTED by the CB", transform);
+        PlayFlow.Interception();
     }
 
     /// <summary>The ball now "belongs" to the CB: the receiver's hands and catch checks ignore it from here on.</summary>
