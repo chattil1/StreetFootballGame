@@ -131,6 +131,7 @@ public class ManCoverageCB : MonoBehaviour
 
     // Arms (two-bone IK over the animation)
     Transform leftUpper, leftLower, leftHandBone, rightUpper, rightLower, rightHandBone;
+    float nextBoneSearch;
     float armLength;          // shoulder to wrist (units)
     float shoulderHeight;     // shoulder above his pivot (units), standing
     float armWeight, armWeightVelocity, armWantWeight;
@@ -873,6 +874,11 @@ public class ManCoverageCB : MonoBehaviour
         {
             return true;
         }
+        if (Time.time < nextBoneSearch)
+        {
+            return false; // (searching the whole skeleton every frame is slow; retry a few times a second)
+        }
+        nextBoneSearch = Time.time + 0.5f;
         if (animator != null && animator.isHuman && animator.avatar != null)
         {
             leftUpper = animator.GetBoneTransform(HumanBodyBones.LeftUpperArm);

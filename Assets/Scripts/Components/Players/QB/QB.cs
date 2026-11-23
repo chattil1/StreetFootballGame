@@ -45,7 +45,11 @@ public class QB : MonoBehaviour
     private float throwCameraApexProgress = 0f;
     private float throwCameraSmoothTime = -1f; // smoothing used until the top of the arc (so the camera is in place by then)
     private float flightCameraSettle = 0f;
-    private float flightCameraExtraRange = 0f;   // extra backing off added mid-flight if the ball would leave the screen
+    private float flightCameraExtraRange = 0f;
+    private bool inAirCamStarted;                 // the in-air camera has taken over for this throw
+    private float inAirCamStartTime;
+    private Vector3 inAirCamStartOffset;          // camera position minus the WR's spot when it took over
+    private Quaternion inAirCamStartRotation;   // extra backing off added mid-flight if the ball would leave the screen
     [Tooltip("Worked out at each release (you can watch it change here in Play mode): the least lift, from Raise At Catch up to Max Raise At Throw, that puts the top of the ball at the top of the screen at the top of the throw's arc. Held until then, then eases to Raise At Catch.")]
     public float inAirCamRaiseAtThrow = 1.25f;
     [Tooltip("The MOST the camera may lift right after the throw (eases down to Raise At Catch over the flight). It only goes above the normal lift as much as needed to keep the top of the ball in the framing area.")]
@@ -589,23 +593,23 @@ public class QB : MonoBehaviour
         ComputeInAirCameraPose(receiverObject, football.transform.position, progress, unit, inAirCamera,
             fieldOfView, false, Vector3.zero, out Vector3 desiredPosition, out Quaternion viewRotation, out Vector3 receiverSpot, out _, out _, out _);
 
-        // Follow relative to the WR: smooth the camera's offset from him, not its world position, so a fast WR
-        // (and a ~1 s pass) never leaves the camera trailing behind.
-        Vector3 currentOffset = cameraTransform.position - receiverSpot;
-        // Until the top of the arc it eases in a little faster on short throws, so it has reached the worked-out
-        // height by the time the ball peaks (with 0.3 s smoothing it was still ~40% of the way short at the top of
-        // a 20-30 yard throw, so the peak went off the top of the screen).
-        float smoothTime = inAirCameraPositionSmoothTime;
-        if (progress < throwCameraApexProgress && throwCameraSmoothTime > 0f)
+        // Ease from wherever the camera was at the release into the worked-out pose (relative to the WR), over
+        // a short blend that's always done by the top of the arc; after that the camera sits exactly on its pose
+        // and aims exactly at its focus every frame. (It used to chase the pose with SmoothDamp / Slerp: the aim
+        // lagged several degrees behind the focus as it moved downfield - pitched down at a point behind it - and
+        // that's what put the ball just off the top on 20-30 yard throws, worse at low frame rates.)
+        if (!inAirCamStarted)
         {
-            smoothTime = Mathf.Min(smoothTime, throwCameraSmoothTime);
+            inAirCamStarted = true;
+            inAirCamStartTime = Time.time;
+            inAirCamStartOffset = cameraTransform.position - receiverSpot;
+            inAirCamStartRotation = cameraTransform.rotation;
         }
-        Vector3 offset = Vector3.SmoothDamp(currentOffset, desiredPosition - receiverSpot, ref inAirCameraVelocity, Mathf.Max(0.01f, smoothTime));
-        cameraTransform.position = receiverSpot + offset;
-        float turnSpeed = progress < throwCameraApexProgress && throwCameraSmoothTime > 0f
-            ? Mathf.Max(inAirCameraTurnSpeed, 1f / throwCameraSmoothTime) : inAirCameraTurnSpeed;
-        float turn = 1f - Mathf.Exp(-turnSpeed * Time.deltaTime);
-        cameraTransform.rotation = Quaternion.Slerp(cameraTransform.rotation, viewRotation, turn);
+        float apexSeconds = throwCameraApexProgress * timeToCatch;
+        float blendTime = Mathf.Max(0.05f, Mathf.Min(2f * inAirCameraPositionSmoothTime, apexSeconds > 0f ? 0.6f * apexSeconds : 0.6f));
+        float blend = Mathf.SmoothStep(0f, 1f, (Time.time - inAirCamStartTime) / blendTime);
+        cameraTransform.position = receiverSpot + Vector3.Lerp(inAirCamStartOffset, desiredPosition - receiverSpot, blend);
+        cameraTransform.rotation = Quaternion.Slerp(inAirCamStartRotation, viewRotation, blend);
         if (inAirCamera != null)
         {
             inAirCamera.fieldOfView = fieldOfView; // fixed for the whole flight (worked out at the release)
@@ -823,6 +827,7 @@ public class QB : MonoBehaviour
         throwCameraSmoothTime = apexTime > 0f ? apexTime / 4f : -1f;
         flightCameraSettle = 0f;
         flightCameraExtraRange = 0f;
+        inAirCamStarted = false;
 
         // The whole climb is framed, not just the top of the arc: with a flatter camera the ball sits highest on
         // screen a little BEFORE the apex (it's still closer to the camera then), which is why the ball just
