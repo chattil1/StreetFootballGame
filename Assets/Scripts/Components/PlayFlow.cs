@@ -36,6 +36,7 @@ public class PlayFlow : MonoBehaviour
         DontDestroyOnLoad(flow);
         instance = flow.AddComponent<PlayFlow>();
         SceneManager.sceneLoaded += (scene, mode) => instance.ResetPlay();
+        PrepareUMA();
         instance.StartCoroutine(instance.CheckPlayersVisible(0));
     }
 
@@ -86,9 +87,40 @@ public class PlayFlow : MonoBehaviour
         interception = false;
         banner = null;
         loads++;
-        if (loads > 1)
+        PrepareUMA();
+        StartCoroutine(CheckPlayersVisible(loads));
+    }
+
+    /// <summary>
+    /// Runs as each scene loads, before the UMA players build:
+    ///  - Points UMA at this scene's own UMA context (UMA_GLIB). After a reload UMA could otherwise pick up a
+    ///    leftover context (e.g. the hidden editor-time one UMA makes in the Editor), whose generator doesn't build
+    ///    for this scene.
+    ///  - Makes every UMA generator turn its texture atlases into normal textures (Convert Render Texture). As
+    ///    render textures they're GPU-only and can come back empty after a scene reload or a window / resolution
+    ///    change (Metal), which leaves the players' bodies invisible.
+    /// </summary>
+    static void PrepareUMA()
+    {
+        UMA.UMAContextBase sceneContext = null;
+        foreach (UMA.UMAContextBase context in Resources.FindObjectsOfTypeAll<UMA.UMAContextBase>())
         {
-            StartCoroutine(CheckPlayersVisible(loads - 1));
+            if (context != null && context.gameObject.scene == SceneManager.GetActiveScene() && context.isActiveAndEnabled)
+            {
+                sceneContext = context;
+                break;
+            }
+        }
+        if (sceneContext != null)
+        {
+            UMA.UMAContextBase.Instance = sceneContext;
+        }
+        foreach (UMA.UMAGeneratorBase generator in Resources.FindObjectsOfTypeAll<UMA.UMAGeneratorBase>())
+        {
+            if (generator != null && generator.gameObject.scene.IsValid())
+            {
+                generator.convertRenderTexture = true;
+            }
         }
     }
 
@@ -103,7 +135,17 @@ public class PlayFlow : MonoBehaviour
         yield return new WaitForSeconds(4f);
         Camera cam = Camera.main != null ? Camera.main : FindObjectOfType<Camera>();
         var report = new System.Text.StringBuilder();
-        report.AppendLine("Player visibility check " + (restartNumber == 0 ? "(first load)" : "(after restart " + restartNumber + ")") + ":");
+        report.AppendLine("Player visibility check " + (restartNumber == 0 ? "(first load)" : "(after load " + restartNumber + ")") + ":");
+        UMA.UMAContextBase activeContext = UMA.UMAContextBase.Instance;
+        report.AppendLine("  UMA context: " + (activeContext == null ? "NONE" : activeContext.name + " (scene: " + activeContext.gameObject.scene.name + ")"));
+        foreach (UMA.UMAContextBase context in Resources.FindObjectsOfTypeAll<UMA.UMAContextBase>())
+        {
+            report.AppendLine("    context found: " + context.name + ", scene=" + context.gameObject.scene.name + ", active=" + context.isActiveAndEnabled + ", hideFlags=" + context.hideFlags);
+        }
+        foreach (UMA.UMAGeneratorBase generator in Resources.FindObjectsOfTypeAll<UMA.UMAGeneratorBase>())
+        {
+            report.AppendLine("    generator found: " + generator.name + ", scene=" + generator.gameObject.scene.name + ", active=" + generator.isActiveAndEnabled + ", convertRenderTexture=" + generator.convertRenderTexture);
+        }
         foreach (UMA.CharacterSystem.DynamicCharacterAvatar avatar in FindObjectsOfType<UMA.CharacterSystem.DynamicCharacterAvatar>())
         {
             SkinnedMeshRenderer[] renderers = avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true);
@@ -126,7 +168,10 @@ public class PlayFlow : MonoBehaviour
                         continue;
                     }
                     Texture main = material.HasProperty("_MainTex") ? material.GetTexture("_MainTex") : null;
-                    report.Append(" [" + material.name + ", shader=" + (material.shader == null ? "NONE" : material.shader.name)
+                    string textureState = main is RenderTexture ? (((RenderTexture)main).IsCreated() ? " (render texture, created)" : " (render texture, NOT CREATED / lost)") : (main != null ? " (texture)" : "");
+                    report.Append(" [" + material.name + textureState + ", queue=" + material.renderQueue
+                        + (material.HasProperty("_Mode") ? ", mode=" + material.GetFloat("_Mode") : "")
+                        + ", shader=" + (material.shader == null ? "NONE" : material.shader.name)
                         + ", supported=" + (material.shader != null && material.shader.isSupported)
                         + ", mainTex=" + (main == null ? "NONE" : main.name + " " + main.width + "x" + main.height)
                         + (material.HasProperty("_Color") ? ", color=" + material.GetColor("_Color") : "") + "]");
