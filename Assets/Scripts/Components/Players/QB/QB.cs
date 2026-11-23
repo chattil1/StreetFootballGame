@@ -44,7 +44,8 @@ public class QB : MonoBehaviour
     private float throwFieldOfView = 0f;
     private float throwCameraApexProgress = 0f;
     private float throwCameraSmoothTime = -1f; // smoothing used until the top of the arc (so the camera is in place by then)
-    private float flightCameraSettle = 0f;     // how far (0..1) the camera has eased from the throw values to the catch values
+    private float flightCameraSettle = 0f;
+    private float flightCameraExtraRange = 0f;   // extra backing off added mid-flight if the ball would leave the screen
     [Tooltip("Worked out at each release (you can watch it change here in Play mode): the least lift, from Raise At Catch up to Max Raise At Throw, that puts the top of the ball at the top of the screen at the top of the throw's arc. Held until then, then eases to Raise At Catch.")]
     public float inAirCamRaiseAtThrow = 1.25f;
     [Tooltip("The MOST the camera may lift right after the throw (eases down to Raise At Catch over the flight). It only goes above the normal lift as much as needed to keep the top of the ball in the framing area.")]
@@ -691,6 +692,17 @@ public class QB : MonoBehaviour
             distance = Mathf.Lerp(inAirCamDistanceAtThrow, inAirCamDistanceAtCatch, settle) * unit;
             Vector3 lift = Vector3.up * (raiseAmount * unit);
             distance = InAirCameraRange(focus, lookDirection, lift, distance, false, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
+
+            // Safety net for the climb: if the ball would still poke off the screen (the WR ran somewhere other
+            // than predicted), back off just enough, up to Max Distance At Throw. It only ever grows during the
+            // flight (no pumping in and out) and fades out as the camera settles for the catch.
+            if (progress >= 0.35f * throwCameraApexProgress && settle < 1f)
+            {
+                float withBall = InAirCameraRange(focus, lookDirection, lift, distance, true, ballTop, receiverPoint, receiverSpot, halfWidth, halfHeight);
+                float cap = Mathf.Max(distance, inAirCamMaxDistanceAtThrow * unit);
+                flightCameraExtraRange = Mathf.Max(flightCameraExtraRange, Mathf.Min(withBall, cap) - distance);
+            }
+            distance += flightCameraExtraRange * (1f - settle);
         }
         else
         {
@@ -810,13 +822,23 @@ public class QB : MonoBehaviour
         throwCameraApexProgress = apexTime / timeToCatch;
         throwCameraSmoothTime = apexTime > 0f ? apexTime / 4f : -1f;
         flightCameraSettle = 0f;
+        flightCameraExtraRange = 0f;
 
-        // Worked out for the top of the arc only. (Checking points on the way up as well made shorter throws far
-        // too top-down: a point early in the climb is close to the camera, so it needed a huge lift.)
-        Vector3 apex = releasePosition + new Vector3(launchVelocity.x * apexTime, launchVelocity.y * apexTime - 0.5f * gravity * apexTime * apexTime, launchVelocity.z * apexTime);
-        Vector3 receiverShift = receiver != null ? receiver.PredictRunDisplacement(releaseDelay + apexTime) : Vector3.zero;
-        ComputeInAirCameraPose(receiverObject, apex, throwCameraApexProgress, unit, cam, inAirCamFieldOfView, true, receiverShift,
-            out _, out _, out _, out fieldOfView, out float raiseAtThrow, out float distanceAtThrow);
+        // The whole climb is framed, not just the top of the arc: with a flatter camera the ball sits highest on
+        // screen a little BEFORE the apex (it's still closer to the camera then), which is why the ball just
+        // missed the top of the screen on 20-30 yard throws. Every lift is tried; for each the camera backs off
+        // just far enough for the ball (at every point of the climb) and the WR to fit; the closest that doesn't
+        // look down more steeply than Max Look Down Angle is used.
+        List<ThrowFramingSample> samples = new List<ThrowFramingSample>();
+        float[] fractions = { 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1f };
+        foreach (float fraction in fractions)
+        {
+            float t = apexTime * fraction;
+            Vector3 point = releasePosition + new Vector3(launchVelocity.x * t, launchVelocity.y * t - 0.5f * gravity * t * t, launchVelocity.z * t);
+            Vector3 shift = receiver != null ? receiver.PredictRunDisplacement(releaseDelay + t) : Vector3.zero;
+            samples.Add(MakeThrowFramingSample(receiverObject, point, t / timeToCatch, unit, shift));
+        }
+        SolveThrowFraming(samples, unit, cam, out float raiseAtThrow, out float distanceAtThrow, out fieldOfView);
         inAirCamRaiseAtThrow = raiseAtThrow;
         inAirCamDistanceAtThrow = distanceAtThrow;
         if (cam != null)
@@ -824,6 +846,125 @@ public class QB : MonoBehaviour
             cam.fieldOfView = fieldOfView;
         }
         return fieldOfView;
+    }
+
+    struct ThrowFramingSample
+    {
+        public Vector3 focus, ballTop, receiverPoint, receiverSpot;
+    }
+
+    /// <summary>The in-air camera's aim point and what it must keep in view, for the ball at this point of the flight.</summary>
+    ThrowFramingSample MakeThrowFramingSample(GameObject receiverObject, Vector3 ballPosition, float progress, float unit, Vector3 receiverShift)
+    {
+        WR receiver = receiverObject.GetComponent<WR>();
+        Vector3 receiverPosition = receiverObject.transform.position + receiverShift;
+        float groundHeight = receiverPosition.y;
+        ThrowFramingSample sample = new ThrowFramingSample();
+        sample.receiverPoint = (receiver != null ? receiver.GetLeftShoulderPosition() : receiverObject.transform.position) + receiverShift;
+        sample.receiverSpot = new Vector3(receiverPosition.x, groundHeight, receiverPosition.z);
+        Vector3 ballSpot = new Vector3(ballPosition.x, groundHeight, ballPosition.z);
+        float eased = Mathf.SmoothStep(0f, 1f, progress);
+        sample.focus = Vector3.Lerp(ballSpot, sample.receiverSpot, Mathf.Lerp(inAirCamCenterAtThrow, inAirCamCenterAtCatch, eased))
+                       + Vector3.up * (inAirCamAimHeight * unit);
+        Collider ballCollider = football.GetComponentInChildren<Collider>();
+        float ballRadius = ballCollider != null ? ballCollider.bounds.extents.y : 0f;
+        sample.ballTop = ballPosition + Vector3.up * (2f * ballRadius); // the whole ball plus a ball's height of margin
+        return sample;
+    }
+
+    Vector3 InAirLookDirection()
+    {
+        Vector3 downfield = inAirCameraDownfield.sqrMagnitude > 0f ? inAirCameraDownfield : Vector3.forward;
+        Vector3 cameraRight = Vector3.Cross(Vector3.up, downfield);
+        return Quaternion.AngleAxis(Mathf.Clamp(inAirCamTilt, 2f, 85f), cameraRight) * downfield;
+    }
+
+    /// <summary>
+    /// Throw values for the in-air camera that keep every sample in view: for each lift (Raise At Catch .. Max
+    /// Raise At Throw), the least distance (from Distance At Catch) at which the WR and the ball fit at all the
+    /// samples, up to Max Distance At Throw; the closest one within Max Look Down Angle wins. If none fits, the
+    /// field of view widens only as much as needed (up to Max Field Of View) at the furthest allowed spot.
+    /// </summary>
+    void SolveThrowFraming(List<ThrowFramingSample> samples, float unit, Camera cam, out float raiseAmount, out float distanceAmount, out float fieldOfView)
+    {
+        Vector3 lookDirection = InAirLookDirection();
+        float aspect = cam != null ? cam.aspect : 16f / 9f;
+        fieldOfView = inAirCamFieldOfView;
+        float framing = Mathf.Max(0.05f, inAirCamFramingArea);
+        float halfHeight = Mathf.Tan(fieldOfView * 0.5f * Mathf.Deg2Rad) * framing;
+        float halfWidth = halfHeight * aspect;
+        float baseRange = inAirCamDistanceAtCatch * unit;
+        float minRaise = inAirCamRaiseAtCatch;
+        float maxRaise = Mathf.Max(minRaise, inAirCamMaxRaiseAtThrow);
+        float maxLookDown = Mathf.Clamp(inAirCamMaxLookDownAngle, 1f, 89f);
+        const int steps = 32;
+        bool found = false;
+        float best = float.MaxValue;
+        raiseAmount = minRaise;
+        distanceAmount = inAirCamDistanceAtCatch;
+        for (int i = 0; i <= steps; i++)
+        {
+            float raise = Mathf.Lerp(minRaise, maxRaise, i / (float)steps);
+            Vector3 lift = Vector3.up * (raise * unit);
+            float receiverRange = baseRange;
+            foreach (ThrowFramingSample sample in samples)
+            {
+                receiverRange = Mathf.Max(receiverRange, InAirCameraRange(sample.focus, lookDirection, lift, baseRange, false,
+                    sample.ballTop, sample.receiverPoint, sample.receiverSpot, halfWidth, halfHeight));
+            }
+            float maxRange = Mathf.Max(receiverRange, inAirCamMaxDistanceAtThrow * unit);
+            float range = receiverRange;
+            foreach (ThrowFramingSample sample in samples)
+            {
+                // A point of the climb that's still behind / over the camera even from the furthest allowed spot
+                // can't be framed by any lift or distance; it comes into view by itself, so it's left out.
+                Vector3 furthestAt = sample.focus - lookDirection * maxRange + lift;
+                Vector3 seen = Quaternion.Inverse(SafeLookRotation(sample.focus - furthestAt, Vector3.up)) * (sample.ballTop - furthestAt);
+                if (seen.z <= 0.1f * maxRange)
+                {
+                    continue;
+                }
+                range = Mathf.Max(range, InAirCameraRange(sample.focus, lookDirection, lift, receiverRange, true,
+                    sample.ballTop, sample.receiverPoint, sample.receiverSpot, halfWidth, halfHeight));
+            }
+            if (range > maxRange * 1.0001f)
+            {
+                continue;
+            }
+            float lookDown = Mathf.Atan2(raise * unit, range) * Mathf.Rad2Deg;
+            if (i > 0 && lookDown > maxLookDown)
+            {
+                continue;
+            }
+            float closeness = new Vector2(raise * unit, range).magnitude;
+            if (closeness < best)
+            {
+                best = closeness;
+                found = true;
+                raiseAmount = raise;
+                distanceAmount = range / Mathf.Max(1e-4f, unit);
+            }
+        }
+        if (found)
+        {
+            return;
+        }
+
+        // Nothing fits: furthest allowed spot, steepest allowed lift, then widen the field of view as needed.
+        float furthest = Mathf.Max(baseRange, inAirCamMaxDistanceAtThrow * unit);
+        raiseAmount = Mathf.Clamp(Mathf.Tan(maxLookDown * Mathf.Deg2Rad) * furthest / Mathf.Max(1e-4f, unit), minRaise, maxRaise);
+        distanceAmount = furthest / Mathf.Max(1e-4f, unit);
+        float neededTan = halfHeight;
+        foreach (ThrowFramingSample sample in samples)
+        {
+            Vector3 cameraAt = sample.focus - lookDirection * furthest + Vector3.up * (raiseAmount * unit);
+            Vector3 local = Quaternion.Inverse(SafeLookRotation(sample.focus - cameraAt, Vector3.up)) * (sample.ballTop - cameraAt);
+            if (local.z > 0.1f * furthest)
+            {
+                neededTan = Mathf.Max(neededTan, Mathf.Max(Mathf.Abs(local.y / local.z), Mathf.Abs(local.x / local.z) / Mathf.Max(0.1f, aspect)));
+            }
+        }
+        fieldOfView = Mathf.Clamp(2f * Mathf.Atan(neededTan / framing) * Mathf.Rad2Deg, inAirCamFieldOfView, Mathf.Max(inAirCamFieldOfView, inAirCamMaxFieldOfView));
     }
 
     /// <summary>
