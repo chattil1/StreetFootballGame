@@ -100,20 +100,46 @@ public class PlayFlow : MonoBehaviour
     ///    render textures they're GPU-only and can come back empty after a scene reload or a window / resolution
     ///    change (Metal), which leaves the players' bodies invisible.
     /// </summary>
+    static UMA.UMAContextBase keptContext;
+
     static void PrepareUMA()
     {
         UMA.UMAContextBase sceneContext = null;
         foreach (UMA.UMAContextBase context in Resources.FindObjectsOfTypeAll<UMA.UMAContextBase>())
         {
-            if (context != null && context.gameObject.scene == SceneManager.GetActiveScene() && context.isActiveAndEnabled)
+            if (context != null && context != keptContext && context.gameObject.scene == SceneManager.GetActiveScene() && context.isActiveAndEnabled)
             {
                 sceneContext = context;
                 break;
             }
         }
+
+        // Keep the UMA context (UMA_GLIB) alive across Restart Play. The scene that gets reloaded is the one saved
+        // on disk, and if that copy has no UMA_GLIB (added but not saved, or added only while in Play mode) the
+        // reloaded players have no context / generator and never build their bodies. So the first context we see
+        // is moved out of the scene (DontDestroyOnLoad) and reused after every reload. If a reloaded scene does
+        // bring its own active context, that one is used and the kept one is retired.
         if (sceneContext != null)
         {
-            UMA.UMAContextBase.Instance = sceneContext;
+            if (keptContext != null && keptContext != sceneContext)
+            {
+                Destroy(keptContext.transform.root.gameObject);
+            }
+            keptContext = sceneContext;
+            Transform root = sceneContext.transform.root;
+            if (root.GetComponent<PlayFlow>() == null)
+            {
+                DontDestroyOnLoad(root.gameObject);
+            }
+        }
+        if (keptContext != null)
+        {
+            UMA.UMAContextBase.Instance = keptContext;
+        }
+        else
+        {
+            Debug.LogWarning("PlayFlow: no active UMA context (UMA_GLIB) found. The players can't build their bodies - " +
+                             "add the UMA_GLIB prefab to the scene and save the scene.");
         }
         foreach (UMA.UMAGeneratorBase generator in Resources.FindObjectsOfTypeAll<UMA.UMAGeneratorBase>())
         {
