@@ -339,6 +339,26 @@ public class WR : MonoBehaviour
         public RotationType rotationType { get; set; }
         public Vector3 axisOfRotation { get; set; }
     }*/
+    /// <summary>
+    /// Unhook the input callbacks. The input actions asset outlives the scene, so after Restart Play (a scene reload)
+    /// the old, destroyed WR was still subscribed and its OnRunCanceled etc. threw MissingReferenceException.
+    /// </summary>
+    void OnDestroy()
+    {
+        if (playerInput == null || playerInput.actions == null)
+        {
+            return;
+        }
+        playerInput.actions["Run"].performed -= OnRun;
+        playerInput.actions["Run"].canceled -= OnRunCanceled;
+        playerInput.actions["Catch"].performed -= OnCatch;
+        playerInput.actions["Catch"].canceled -= OnCatchCanceled;
+        playerInput.actions["YButtonPressed"].performed -= OnYButtonPressed;
+        playerInput.actions["YButtonPressed"].canceled -= OnYButtonCanceled;
+        playerInput.actions["L2TriggerPressed"].performed -= OnL2TriggerPressed;
+        playerInput.actions["L2TriggerPressed"].canceled -= OnL2TriggerCanceled;
+    }
+
     void Awake()
     {
         // Catch contacts: the ball (ContinuousDynamic, set by the QB) only sweeps against this WR's colliders

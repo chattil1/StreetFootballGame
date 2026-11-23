@@ -192,6 +192,21 @@ public class QB : MonoBehaviour
         inAirCamDefaultsVersion = InAirCamDefaultsVersion;
     }
 
+    /// <summary>
+    /// Unhook the input callbacks (the input actions asset outlives the scene, so after Restart Play the destroyed
+    /// QB would otherwise still get them).
+    /// </summary>
+    void OnDestroy()
+    {
+        if (playerInput == null || playerInput.actions == null)
+        {
+            return;
+        }
+        playerInput.actions["ThrowXbox360"].performed -= OnThrowPerformed;
+        playerInput.actions["ThrowBXbox360"].performed -= OnThrowBPerformed;
+        playerInput.actions["PressedPlay1"].performed -= OnPlay1Selected;
+    }
+
     void Awake()
     {
         // The throw animation's ReleaseFootball event runs on EVERY QB component on the animated object, so a second
