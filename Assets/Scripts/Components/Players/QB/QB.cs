@@ -798,23 +798,12 @@ public class QB : MonoBehaviour
         throwCameraSmoothTime = apexTime > 0f ? apexTime / 4f : -1f;
         flightCameraSettle = 0f;
 
-        // Not just the apex: the ball on the way up to it is checked too (the camera's aim moves along with the
-        // flight, so on a shorter throw a point before the top can sit higher on screen than the top itself).
-        // The biggest lift / field of view / distance any of them needs is used for the whole climb.
-        float raiseAtThrow = inAirCamRaiseAtCatch, distanceAtThrow = inAirCamDistanceAtCatch;
-        fieldOfView = inAirCamFieldOfView;
-        float[] fractions = { 0.5f, 0.65f, 0.8f, 0.9f, 1f };
-        foreach (float fraction in fractions)
-        {
-            float t = apexTime * fraction;
-            Vector3 point = releasePosition + new Vector3(launchVelocity.x * t, launchVelocity.y * t - 0.5f * gravity * t * t, launchVelocity.z * t);
-            Vector3 receiverShift = receiver != null ? receiver.PredictRunDisplacement(releaseDelay + t) : Vector3.zero;
-            ComputeInAirCameraPose(receiverObject, point, t / timeToCatch, unit, cam, inAirCamFieldOfView, true, receiverShift,
-                out _, out _, out _, out float pointFieldOfView, out float pointRaise, out float pointDistance);
-            raiseAtThrow = Mathf.Max(raiseAtThrow, pointRaise);
-            distanceAtThrow = Mathf.Max(distanceAtThrow, pointDistance);
-            fieldOfView = Mathf.Max(fieldOfView, pointFieldOfView);
-        }
+        // Worked out for the top of the arc only. (Checking points on the way up as well made shorter throws far
+        // too top-down: a point early in the climb is close to the camera, so it needed a huge lift.)
+        Vector3 apex = releasePosition + new Vector3(launchVelocity.x * apexTime, launchVelocity.y * apexTime - 0.5f * gravity * apexTime * apexTime, launchVelocity.z * apexTime);
+        Vector3 receiverShift = receiver != null ? receiver.PredictRunDisplacement(releaseDelay + apexTime) : Vector3.zero;
+        ComputeInAirCameraPose(receiverObject, apex, throwCameraApexProgress, unit, cam, inAirCamFieldOfView, true, receiverShift,
+            out _, out _, out _, out fieldOfView, out float raiseAtThrow, out float distanceAtThrow);
         inAirCamRaiseAtThrow = raiseAtThrow;
         inAirCamDistanceAtThrow = distanceAtThrow;
         if (cam != null)
