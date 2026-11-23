@@ -742,7 +742,9 @@ private string collisionGameObjectName = "";
 
                 //Destroy(gameObject.GetComponent<FixedJoint>());
                 //joint.connectedBody = null;
-                if (Vector3.Distance(gameObject.GetComponent<Rigidbody>().worldCenterOfMass, handCollisionGameObject.transform.position) > 0.3f) {
+                // (handCollisionGameObject is only set once a WR hand has touched the ball; a CB's hand or a cube can
+                // leave the ball before that, e.g. on a swat or a pick)
+                if (handCollisionGameObject == null || Vector3.Distance(gameObject.GetComponent<Rigidbody>().worldCenterOfMass, handCollisionGameObject.transform.position) > 0.3f) {
                     addForce = false;
                     withinRange = false;
                     caughtFootball = false;
