@@ -46,6 +46,8 @@ public class QB : MonoBehaviour
     private float throwCameraSmoothTime = -1f; // smoothing used until the top of the arc (so the camera is in place by then)
     private float flightCameraSettle = 0f;
     private float flightCameraExtraRange = 0f;
+    private float cameraBallBackOff = 0f;          // real-camera back-off keeping the ball on screen this throw
+    private bool loggedApexCamera;
     private bool inAirCamStarted;                 // the in-air camera has taken over for this throw
     private float inAirCamStartTime;
     private Vector3 inAirCamStartOffset;          // camera position minus the WR's spot when it took over
@@ -613,6 +615,84 @@ public class QB : MonoBehaviour
         if (inAirCamera != null)
         {
             inAirCamera.fieldOfView = fieldOfView; // fixed for the whole flight (worked out at the release)
+            KeepBallOnScreen(inAirCamera, cameraTransform, unit, blend, progress);
+        }
+    }
+
+    /// <summary>
+    /// Final guarantee, checked with the real camera (its actual projection, not the worked-out model): if the top
+    /// of the ball would be above the top of the framing area (or off the side), the camera backs straight away
+    /// along its view, just far enough to bring it in (up to Max Distance At Throw). The back-off eases out again
+    /// once it's no longer needed. A ball that's still behind or over the camera even when backed off fully is
+    /// left alone: it comes into view by itself.
+    /// </summary>
+    void KeepBallOnScreen(Camera cam, Transform cameraTransform, float unit, float blend, float progress)
+    {
+        if (blend < 1f)
+        {
+            return;
+        }
+        Collider ballCollider = football.GetComponentInChildren<Collider>();
+        Vector3 ballTop = ballCollider != null
+            ? ballCollider.bounds.center + Vector3.up * ballCollider.bounds.extents.y
+            : football.transform.position;
+        float topLimit = 0.5f + 0.5f * Mathf.Clamp(inAirCamFramingArea, 0.05f, 1f) * 0.95f;
+        float sideLimit = topLimit;
+        Vector3 basePosition = cameraTransform.position;
+        Vector3 back = -cameraTransform.forward;
+        float maxExtra = Mathf.Max(0f, inAirCamMaxDistanceAtThrow * unit);
+
+        bool Fits(float extra, out Vector3 viewport)
+        {
+            cameraTransform.position = basePosition + back * extra;
+            viewport = cam.WorldToViewportPoint(ballTop);
+            return viewport.z > 0f && viewport.y <= topLimit && viewport.x <= sideLimit && viewport.x >= 1f - sideLimit;
+        }
+
+        float needed = 0f;
+        if (!Fits(0f, out Vector3 seenAt))
+        {
+            if (Fits(maxExtra, out _) || seenAt.z > 0f)
+            {
+                // Smallest back-off that fits: step out, then narrow it down.
+                float low = 0f, high = maxExtra;
+                float step = Mathf.Max(0.05f * unit, 1e-3f);
+                for (float extra = step; extra < maxExtra; extra += step)
+                {
+                    if (Fits(extra, out _))
+                    {
+                        high = extra;
+                        break;
+                    }
+                    low = extra;
+                }
+                for (int i = 0; i < 8; i++)
+                {
+                    float middle = 0.5f * (low + high);
+                    if (Fits(middle, out _))
+                    {
+                        high = middle;
+                    }
+                    else
+                    {
+                        low = middle;
+                    }
+                }
+                needed = high;
+            }
+        }
+        // Grows at once (the ball must never leave the screen); eases back in at up to one player height a second.
+        cameraBallBackOff = needed > cameraBallBackOff ? needed : Mathf.MoveTowards(cameraBallBackOff, needed, unit * Time.deltaTime);
+        cameraTransform.position = basePosition + back * cameraBallBackOff;
+
+        if (logPassAccuracy && !loggedApexCamera && progress >= throwCameraApexProgress)
+        {
+            loggedApexCamera = true;
+            Vector3 viewport = cam.WorldToViewportPoint(ballTop);
+            Debug.Log($"In-air camera at the top of the arc: ball top at screen x {viewport.x:F2}, y {viewport.y:F2} (top of framing {topLimit:F2}), " +
+                      $"{viewport.z / Mathf.Max(1e-4f, unit):F1} player heights in front. Throw values: raise {inAirCamRaiseAtThrow:F2}, distance {inAirCamDistanceAtThrow:F2}, " +
+                      $"FOV {cam.fieldOfView:F1}; extra back-off to keep the ball on screen {cameraBallBackOff / Mathf.Max(1e-4f, unit):F2} player heights. " +
+                      $"Camera height {(cameraTransform.position.y - football.transform.position.y) / Mathf.Max(1e-4f, unit):F2} player heights relative to the ball.");
         }
     }
 
@@ -828,6 +908,8 @@ public class QB : MonoBehaviour
         flightCameraSettle = 0f;
         flightCameraExtraRange = 0f;
         inAirCamStarted = false;
+        cameraBallBackOff = 0f;
+        loggedApexCamera = false;
 
         // The whole climb is framed, not just the top of the arc: with a flatter camera the ball sits highest on
         // screen a little BEFORE the apex (it's still closer to the camera then), which is why the ball just
