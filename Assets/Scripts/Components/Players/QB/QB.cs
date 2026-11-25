@@ -36,6 +36,8 @@ public class QB : MonoBehaviour
     [Range(0f, 1f)] public float inAirCamCenterAtThrow = 0.5f;
     [Tooltip("Where the camera centres between the ball's spot (0) and the WR (1), as the ball reaches the WR.")]
     [Range(0f, 1f)] public float inAirCamCenterAtCatch = 1f;
+    [Tooltip("Side to side (across the field), where the camera centres between the ball (0) and the WR (1) until the top of the arc; then it eases to Center At Catch. 0.5 = halfway, so on a throw across the field the ball and the WR sit evenly either side of the middle of the screen. (Center At Throw / At Catch still set it up and down the field.)")]
+    [Range(0f, 1f)] public float inAirCamSideCenter = 0.5f;
     [Tooltip("Camera field of view (degrees) while the ball is in the air and after the catch. Smaller = more zoomed in.")]
     public float inAirCamFieldOfView = 42f;
     [Tooltip("The WIDEST the in-air field of view may be. At each release the field of view for the whole flight is worked out once, from the top of the " +
@@ -723,8 +725,7 @@ public class QB : MonoBehaviour
         Vector3 ballSpot = new Vector3(ballPosition.x, groundHeight, ballPosition.z);
         receiverSpot = new Vector3(receiverPosition.x, groundHeight, receiverPosition.z);
 
-        float eased = Mathf.SmoothStep(0f, 1f, progress);
-        Vector3 focus = Vector3.Lerp(ballSpot, receiverSpot, Mathf.Lerp(inAirCamCenterAtThrow, inAirCamCenterAtCatch, eased));
+        Vector3 focus = InAirFocus(ballSpot, receiverSpot, progress);
         focus += Vector3.up * (inAirCamAimHeight * unit); // about chest height
 
         // Fixed view: downfield, tilted down.
@@ -950,13 +951,31 @@ public class QB : MonoBehaviour
         sample.receiverPoint = (receiver != null ? receiver.GetLeftShoulderPosition() : receiverObject.transform.position) + receiverShift;
         sample.receiverSpot = new Vector3(receiverPosition.x, groundHeight, receiverPosition.z);
         Vector3 ballSpot = new Vector3(ballPosition.x, groundHeight, ballPosition.z);
-        float eased = Mathf.SmoothStep(0f, 1f, progress);
-        sample.focus = Vector3.Lerp(ballSpot, sample.receiverSpot, Mathf.Lerp(inAirCamCenterAtThrow, inAirCamCenterAtCatch, eased))
-                       + Vector3.up * (inAirCamAimHeight * unit);
+        sample.focus = InAirFocus(ballSpot, sample.receiverSpot, progress) + Vector3.up * (inAirCamAimHeight * unit);
         Collider ballCollider = football.GetComponentInChildren<Collider>();
         float ballRadius = ballCollider != null ? ballCollider.bounds.extents.y : 0f;
         sample.ballTop = ballPosition + Vector3.up * (2f * ballRadius); // the whole ball plus a ball's height of margin
         return sample;
+    }
+
+    /// <summary>
+    /// The spot on the field the in-air camera centres on. Up and down the field it sits between the ball's spot and
+    /// the WR by Center At Throw .. At Catch (eased over the flight); across the field by Side Center until the top
+    /// of the arc, then easing to Center At Catch by the catch. (It used to use one blend for both, ~75% of the way
+    /// to the WR at the top of the arc, which left the ball well over to one side on throws across the field.)
+    /// </summary>
+    Vector3 InAirFocus(Vector3 ballSpot, Vector3 receiverSpot, float progress)
+    {
+        Vector3 downfield = inAirCameraDownfield.sqrMagnitude > 0f ? inAirCameraDownfield.normalized : Vector3.forward;
+        Vector3 across = Vector3.Cross(Vector3.up, downfield);
+        float alongWeight = Mathf.Lerp(inAirCamCenterAtThrow, inAirCamCenterAtCatch, Mathf.SmoothStep(0f, 1f, progress));
+        float afterApex = throwCameraApexProgress < 1f
+            ? Mathf.SmoothStep(0f, 1f, (progress - throwCameraApexProgress) / Mathf.Max(0.01f, 1f - throwCameraApexProgress))
+            : 0f;
+        float acrossWeight = Mathf.Lerp(inAirCamSideCenter, inAirCamCenterAtCatch, afterApex);
+        Vector3 along = Vector3.Lerp(ballSpot, receiverSpot, alongWeight);
+        Vector3 side = Vector3.Lerp(ballSpot, receiverSpot, acrossWeight);
+        return along + across * Vector3.Dot(side - along, across);
     }
 
     Vector3 InAirLookDirection()
